@@ -129,53 +129,43 @@ async def greenapi_webhook(request: Request):
 
 @app.post("/chatwoot/webhook")
 async def chatwoot_webhook(request: Request):
+    processed_messages = set()
     body = await request.json()
     logger.info("Получен вебхук от Chatwoot: %s", body)
 
-    # 1. Проверка типа события
     if body.get("event") != "message_created":
         return {"status": "ignored"}
 
-    message = body.get("message", {})
-    message_id = message.get("id")
-    message_type = message.get("message_type")
-    sender_type = message.get("sender_type")
-    message_text = message.get("content")
+    message = body.get("content")
+    sender = body.get("sender", {})
+    sender_type = sender.get("type")
+    chat_id = body.get("conversation", {}).get("contact_inbox", {}).get("source_id")
+    message_id = body.get("id")
 
-    # 2. Проверка: только сообщения от операторов (а не клиентов)
-    if sender_type != "User" or message_type != 1:
-        return {"status": "not a user message"}
+    if not all([message, sender_type, chat_id, message_id]):
+        return {"status": "missing data"}
 
-    # 3. Проверка на дубликаты
-    if message_id in sent_message_ids:
+    # игнорируем не User-сообщения
+    if sender_type.lower() != "user":
+        return {"status": "ignored"}
+
+    # игнорируем уже обработанные сообщения
+    if message_id in processed_messages:
         return {"status": "duplicate"}
-    sent_message_ids.add(message_id)
+    processed_messages.add(message_id)
 
-    # 4. Получить chatId из conversation → contact_inbox → source_id
-    chat_id = (
-        body.get("conversation", {})
-        .get("contact_inbox", {})
-        .get("source_id", "")
-    )
-
-    if not chat_id.endswith("@c.us") or not message_text:
-        return {"status": "invalid data"}
-
-    # 5. Отправка в Green API
+    # отправка в Green API
     greenapi_url = f"https://api.green-api.com/waInstance{GREENAPI_ID}/SendMessage/{GREENAPI_TOKEN}"
     payload = {
         "chatId": chat_id,
-        "message": message_text,
+        "message": message
     }
 
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(greenapi_url, json=payload)
-            logger.info("Ответ от GreenAPI: %s", response.text)
-            return {"status": "sent", "message_id": message_id}
-    except Exception as e:
-        logger.exception("Ошибка при отправке сообщения: %s", e)
-        return {"status": "error", "detail": str(e)}
+    async with httpx.AsyncClient() as client:
+        response = await client.post(greenapi_url, json=payload)
+        logger.info("Ответ от GreenAPI: %s", response.text)
+
+    return {"status": "sent"}
 @app.post("/test/send-to-chatwoot")
 async def test_send_to_chatwoot():
     test_sender_chat_id = "79998887766@c.us"
