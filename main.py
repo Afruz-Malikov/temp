@@ -30,10 +30,11 @@ async def greenapi_webhook(request: Request):
     if body.get("typeWebhook") != "incomingMessageReceived":
         logger.info("Пропущен вебхук не того типа")
         return {"status": "ignored"}
-
-    message = body.get("body", {}).get("messageData", {}).get("textMessageData", {}).get("textMessage", "")
-    sender_chat_id = body.get("body", {}).get("senderData", {}).get("chatId", "")
-    sender_name = body.get("body", {}).get("senderData", {}).get("senderName", "")
+# {'typeWebhook': 'incomingMessageReceived', 'instanceData': {'idInstance': 1103272969, 'wid': '79259654151@c.us', 'typeInstance': 'whatsapp'}, 'timestamp': 1751289178, 'idMessage': 'AEB7B48E8C36DA08365A992A5F0617DF', 'senderData': {'chatId': '998998180817@c.us', 'chatName': '=}', 'sender': '998998180817@c.us', 'senderName': '=}', 'senderContactName': '=}'}, 'messageData': {'typeMessage': 'textMessage', 'textMessageData': {'textMessage': 'test'}}}
+# INFO:uvicorn.webhook:Получен вебхук: {'typeWebhook': 'incomingMessageReceived', 'instanceData': {'idInstance': 1103272969, 'wid': '79259654151@c.us', 'typeInstance': 'whatsapp'}, 'timestamp': 1751289178, 'idMessage': 'AEB7B48E8C36DA08365A992A5F0617DF', 'senderData': {'chatId': '998998180817@c.us', 'chatName': '=}', 'sender': '998998180817@c.us', 'senderName': '=}', 'senderContactName': '=}'}, 'messageData': {'typeMessage': 'textMessage', 'textMessageData': {'textMessage': 'test'}}}
+    message = body.get("messageData", {}).get("textMessageData", {}).get("textMessage", "")
+    sender_chat_id = body.get("senderData", {}).get("chatId", "")
+    sender_name = body.get("senderData", {}).get("senderName", "")
 
     if not message or not sender_chat_id:
         logger.warning("Нет текста или sender_chat_id")
