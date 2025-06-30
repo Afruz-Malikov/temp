@@ -30,8 +30,6 @@ async def greenapi_webhook(request: Request):
     if body.get("typeWebhook") != "incomingMessageReceived":
         logger.info("Пропущен вебхук не того типа")
         return {"status": "ignored"}
-# {'typeWebhook': 'incomingMessageReceived', 'instanceData': {'idInstance': 1103272969, 'wid': '79259654151@c.us', 'typeInstance': 'whatsapp'}, 'timestamp': 1751289178, 'idMessage': 'AEB7B48E8C36DA08365A992A5F0617DF', 'senderData': {'chatId': '998998180817@c.us', 'chatName': '=}', 'sender': '998998180817@c.us', 'senderName': '=}', 'senderContactName': '=}'}, 'messageData': {'typeMessage': 'textMessage', 'textMessageData': {'textMessage': 'test'}}}
-# INFO:uvicorn.webhook:Получен вебхук: {'typeWebhook': 'incomingMessageReceived', 'instanceData': {'idInstance': 1103272969, 'wid': '79259654151@c.us', 'typeInstance': 'whatsapp'}, 'timestamp': 1751289178, 'idMessage': 'AEB7B48E8C36DA08365A992A5F0617DF', 'senderData': {'chatId': '998998180817@c.us', 'chatName': '=}', 'sender': '998998180817@c.us', 'senderName': '=}', 'senderContactName': '=}'}, 'messageData': {'typeMessage': 'textMessage', 'textMessageData': {'textMessage': 'test'}}}
     message = body.get("messageData", {}).get("textMessageData", {}).get("textMessage", "")
     sender_chat_id = body.get("senderData", {}).get("chatId", "")
     sender_name = body.get("senderData", {}).get("senderName", "")
@@ -132,27 +130,46 @@ async def greenapi_webhook(request: Request):
 @app.post("/chatwoot/webhook")
 async def chatwoot_webhook(request: Request):
     body = await request.json()
-    print(body)
-    message = body.get("message")
-    phone_number = body.get("phone_number")
+    logger.info("Получен вебхук от Chatwoot: %s", body)
 
-    if not message or not phone_number:
-        return {"status": "missing data"}
+    if body.get("event") != "conversation_typing_off":
+        return {"status": "ignored"}
 
-    chat_id = phone_number + "@c.us"
+    try:
+        # Последнее сообщение от оператора
+        last_message = body.get("conversation", {}).get("messages", [])
+        if not last_message:
+            return {"status": "no message"}
+        last_message = last_message[-1]
+        message_text = last_message.get("content", "")
+        if not message_text:
+            return {"status": "empty message"}
 
-    payload = {
-        "chatId": chat_id,
-        "message": message
-    }
+        # Получение chatId (source_id)
+        source_id = (
+            body.get("conversation", {})
+            .get("contact_inbox", {})
+            .get("source_id", "")
+        )
+        if not source_id.endswith("@c.us"):
+            return {"status": "invalid chatId"}
 
-    greenapi_url = f"https://api.green-api.com/waInstance{GREENAPI_ID}/SendMessage/{GREENAPI_TOKEN}"
+        # Отправка через Green API
+        greenapi_url = f"https://api.green-api.com/waInstance{GREENAPI_ID}/SendMessage/{GREENAPI_TOKEN}"
+        payload = {
+            "chatId": source_id,
+            "message": message_text,
+        }
 
-    async with httpx.AsyncClient() as client:
-        await client.post(greenapi_url, json=payload)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(greenapi_url, json=payload)
+            logger.info("Ответ от GreenAPI: %s", response.text)
 
-    return {"status": "sent"}
+        return {"status": "sent", "to": source_id, "message": message_text}
 
+    except Exception as e:
+        logger.exception("Ошибка при отправке в Green API: %s", e)
+        return {"status": "error", "detail": str(e)}
 
 @app.post("/test/send-to-chatwoot")
 async def test_send_to_chatwoot():
