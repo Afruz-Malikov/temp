@@ -126,12 +126,12 @@ def process_items_cron():
                     },
                     "patient": {
                         "id": "365dd5c8-8ebe-11ef-b35f-0050560c262e",
-                        "firstname": "Татьяна",
-                        "lastname": "Козлова",
+                        "firstname": "Илья",
+                        "lastname": "Анисимов",
                         "middlename": "Николаевна",
                         "birthdate": "1989-12-20",
                         "sex": "F",
-                        "phone": "998998180817",
+                        "phone": "89255890919",
                         "email": "template@bk.ru",
                         "snils": "",
                         "email_confirm": True
@@ -158,9 +158,8 @@ def process_items_cron():
                             "status": "confirmed",
                             "doctor": {
                                 "id": "9b3bfc64-cb60-11ee-b7ce-0050560c10ce",
-                                "firstname": "Ники",
+                                "firstname": "Никита",
                                 "lastname": "Стуколов",
-                                "middlename": "Николаевич"
                             },
                             "profession": {
                                 "id": "6cae07d0-67ba-11eb-b822-005056b387b3",
