@@ -25,7 +25,7 @@ def my_cron_job():
         logger.error(f"Ошибка при выполнении крон задачи: {e}")
 
 scheduler = BackgroundScheduler()   
-scheduler.add_job(my_cron_job, 'cron', hour='*') 
+scheduler.add_job(my_cron_job, 'cron', hour='*')    
 
 scheduler.start()
 

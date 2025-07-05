@@ -16,21 +16,6 @@ CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
 
-def normalize_chat_id(chat_id: str) -> str:
-    if chat_id.endswith('@g.us'):
-        return chat_id
-    if re.match(r'^\+\d{10,15}@c\.us$', chat_id):
-        return chat_id
-    phone = str(chat_id)
-    if not phone.startswith('+'):
-        if phone.startswith('8'):
-            phone = '+7' + phone[1:]
-        elif phone.startswith('7'):
-            phone = '+7' + phone[1:]
-        else:
-            phone = '+' + phone
-    return f'{phone}@c.us'
-
 async def process_greenapi_webhook(request):
     body = await request.json()
     logger.info("Получен вебхук: %s", body)
@@ -60,6 +45,7 @@ async def process_greenapi_webhook(request):
             contact = next((c for c in contacts if c["phone_number"] == formatted_phone), None)
 
             if not contact:
+                print(sender_name, formatted_phone)
                 contact_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
                     json={"name": sender_name, "phone_number": formatted_phone},

@@ -12,17 +12,6 @@ CHATWOOT_API_KEY = os.getenv("CHATWOOT_API_KEY")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
-
-def normalize_chat_id(chat_id: str) -> str:
-    if chat_id.endswith('@g.us'):
-        return chat_id
-    if re.match(r'^\+\d{10,15}@c\.us$', chat_id):
-        return chat_id
-    phone = str(chat_id)
-    if not phone.startswith('+'):
-        phone.replace('+', '')
-    return f'{phone}@c.us'
-
 async def process_chatwoot_webhook(request):
     processed_messages = set()
     body = await request.json()
@@ -34,7 +23,7 @@ async def process_chatwoot_webhook(request):
     message = body.get("content")
     sender = body.get("sender", {})
     sender_type = sender.get("type")
-    chat_id = normalize_chat_id( body.get("conversation", {}).get("contact_inbox", {}).get("source_id"))
+    chat_id = body.get("conversation", {}).get("contact_inbox", {}).get("source_id")
     print( body.get("conversation", {}).get("contact_inbox", {}))
     message_id = body.get("id")
 
