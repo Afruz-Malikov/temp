@@ -131,7 +131,7 @@ def process_items_cron():
                         "middlename": "Николаевна",
                         "birthdate": "1989-12-20",
                         "sex": "F",
-                        "phone": "89255890919",
+                        "phone": "79255890919",
                         "email": "template@bk.ru",
                         "snils": "",
                         "email_confirm": True
@@ -191,35 +191,52 @@ def process_items_cron():
             }
         }
         
-        # Добавим новый item с актуальным created_at для теста появления новой записи
-        new_obj = copy.deepcopy(data['result'][0])
-        new_item = copy.deepcopy(new_obj['items'][0])
-        new_item['scheduled_at'] = (now + timedelta(hours=1)).isoformat()
-        new_obj['items'] = [new_item]
-        new_obj['created_at'] = now.isoformat()
-        data['result'].append(new_obj)
+        # Добавим дополнительные тестовые записи для демонстрации всех типов уведомлений
+        # Вторая запись для напоминания за день
+        second_obj = copy.deepcopy(data['result'][0])
+        second_item = copy.deepcopy(second_obj['items'][0])
+        second_item['scheduled_at'] = (now + timedelta(hours=23, minutes=30)).isoformat()
+        second_obj['items'] = [second_item]
+        second_obj['created_at'] = (now - timedelta(hours=25)).isoformat()
+        data['result'].append(second_obj)
+        
+        # Третья запись - новая запись
+        third_obj = copy.deepcopy(data['result'][0])
+        third_item = copy.deepcopy(third_obj['items'][0])
+        third_item['scheduled_at'] = (now + timedelta(hours=48)).isoformat()
+        third_obj['items'] = [third_item]
+        third_obj['created_at'] = now.isoformat()
+        data['result'].append(third_obj)
         
         # Настраиваем тестовые данные для разных сценариев
-        # Первая запись — всегда для напоминания (до приема < 2 часа)
+        # Первая запись — для напоминания за 2 часа (до приема < 2 часа)
         if data['result']:
             first_obj = data['result'][0]
             if first_obj.get('items'):
                 first_obj['items'][0]['scheduled_at'] = (now + timedelta(hours=1, minutes=59)).isoformat()
-                first_obj['created_at'] = (now - timedelta(minutes=10)).isoformat()  # чтобы не было нового уведомления
-                logger.info(f"Первая запись настроена для напоминания: {first_obj['items'][0]['scheduled_at']}")
+                first_obj['created_at'] = (now - timedelta(hours=25)).isoformat()  # чтобы не было нового уведомления
+                logger.info(f"Первая запись настроена для напоминания за 2 часа: {first_obj['items'][0]['scheduled_at']}")
         
-        # Вторая запись — всегда новая (для тестирования создания записей)
+        # Вторая запись — для напоминания за день (до приема ~24 часа)
         if len(data['result']) > 1:
             second_obj = data['result'][1]
             if second_obj.get('items'):
-                second_obj['items'][0]['scheduled_at'] = (now + timedelta(hours=3)).isoformat()
-                second_obj['created_at'] = now.isoformat()  # НОВАЯ запись
-                logger.info(f"Вторая запись настроена как НОВАЯ: {second_obj['items'][0]['scheduled_at']}")
+                second_obj['items'][0]['scheduled_at'] = (now + timedelta(hours=23, minutes=30)).isoformat()
+                second_obj['created_at'] = (now - timedelta(hours=25)).isoformat()  # старая запись
+                logger.info(f"Вторая запись настроена для напоминания за день: {second_obj['items'][0]['scheduled_at']}")
+        
+        # Третья запись — новая запись (для тестирования создания записей)
+        if len(data['result']) > 2:
+            third_obj = data['result'][2]
+            if third_obj.get('items'):
+                third_obj['items'][0]['scheduled_at'] = (now + timedelta(hours=48)).isoformat()
+                third_obj['created_at'] = now.isoformat()  # НОВАЯ запись
+                logger.info(f"Третья запись настроена как НОВАЯ: {third_obj['items'][0]['scheduled_at']}")
         
         # Остальные записи — только к следующему запуску (до приема > 2 часа)
-        for i, obj in enumerate(data['result'][2:], start=2):
+        for i, obj in enumerate(data['result'][3:], start=3):
             for item in obj.get('items', []):
-                item['scheduled_at'] = (now + timedelta(hours=4 + i)).isoformat()
+                item['scheduled_at'] = (now + timedelta(hours=72 + i)).isoformat()
             obj['created_at'] = (now - timedelta(hours=1)).isoformat()
             logger.info(f"Запись {i+1} настроена на будущее: {obj['items'][0]['scheduled_at']}")
         
@@ -256,7 +273,6 @@ def process_items_cron():
                 # Уведомление о новой записи (создана после последней обработки)
                 if created_at and created_at > last_processed:
                     notified_new = False
-                    notified_confirmed = False
                     # Формируем персонализированные сообщения
                     patient_name = f"{patient.get('lastname', '')} {patient.get('firstname', '')}".strip()
                     doctor_name = f"{item.get('doctor', {}).get('lastname', '')} {item.get('doctor', {}).get('firstname', '')}".strip()
@@ -264,7 +280,6 @@ def process_items_cron():
                     scheduled_time = scheduled_at.strftime("%d.%m.%Y в %H:%M")
                     
                     new_record_message = f"Здравствуйте {patient_name}, вы успешно создали запись к {doctor_name} на {service_name} в {scheduled_time}"
-                    confirmation_message = f"Ваша запись подтверждена. Ждём вас {scheduled_time}!"
                     
                     try:
                         with httpx.Client() as client:
@@ -294,9 +309,8 @@ def process_items_cron():
                                     for msg in messages:
                                         if msg.get("content") == new_record_message:
                                             notified_new = True
-                                        if msg.get("content") == confirmation_message:
-                                            notified_confirmed = True
-                                    if notified_new and notified_confirmed:
+                                            break
+                                    if notified_new:
                                         break
                     except Exception as e:
                         logger.warning(f"Ошибка при проверке сообщений о новой записи: {e}")
@@ -307,12 +321,57 @@ def process_items_cron():
                     else:
                         logger.info(f"Item {item.get('id', 'нет id')} уже уведомлён о новой записи")
 
-                    if not notified_confirmed:
-                        send_chatwoot_message(phone, confirmation_message)
-                        logger.info(f"Item {item.get('id', 'нет id')} подтверждение отправлено: {scheduled_at_str}")
+                # Напоминание за день до приема (24 часа ± 1 час)
+                if timedelta(hours=25) >= delta >= timedelta(hours=23):
+                    notified_day = False
+                    # Формируем персонализированное напоминание за день
+                    patient_name = f"{patient.get('lastname', '')} {patient.get('firstname', '')}".strip()
+                    doctor_name = f"{item.get('doctor', {}).get('lastname', '')} {item.get('doctor', {}).get('firstname', '')}".strip()
+                    service_name = item.get('service', {}).get('names', {}).get('name_display', 'МРТ')
+                    scheduled_time = scheduled_at.strftime("%d.%m.%Y в %H:%M")
+                    
+                    day_reminder_message = f"Здравствуйте {patient_name}, напоминаем вам о записи завтра у {doctor_name} на {service_name} в {scheduled_time}"
+                
+                    try:
+                        with httpx.Client() as client:
+                            contacts_resp = client.get(
+                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
+                                headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                            )
+                            contacts_resp.raise_for_status()
+                            contacts = contacts_resp.json().get("payload", [])
+                            contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
+                            if contact:
+                                contact_id = contact["id"]
+                                convs_resp = client.get(
+                                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
+                                    headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                                )
+                                convs_resp.raise_for_status()
+                                conversations = convs_resp.json().get("payload", [])
+                                for conv in conversations:
+                                    conversation_id = conv["id"]
+                                    msgs_resp = client.get(
+                                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                                        headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                                    )
+                                    msgs_resp.raise_for_status()
+                                    messages = msgs_resp.json().get("payload", [])
+                                    for msg in messages:
+                                        if msg.get("content") == day_reminder_message:
+                                            notified_day = True
+                                            break
+                                    if notified_day:
+                                        break
+                    except Exception as e:
+                        logger.warning(f"Ошибка при проверке сообщений о напоминании за день: {e}")
+                    if not notified_day:
+                        send_chatwoot_message(phone, day_reminder_message)
+                        logger.info(f"Item {item.get('id', 'нет id')} напоминание за день: {scheduled_at_str}")
                         processed_count += 1
                     else:
-                        logger.info(f"Item {item.get('id', 'нет id')} уже получил подтверждение")
+                        logger.info(f"Item {item.get('id', 'нет id')} уже получил напоминание за день: {scheduled_at_str}")
+
                 # Напоминание за 2 часа до приема (проверяем, что не отправляли в последний час)
                 if timedelta(hours=2) >= delta > timedelta(0):
                     # отправить напоминание, если еще не отправляли
@@ -323,7 +382,7 @@ def process_items_cron():
                     service_name = item.get('service', {}).get('names', {}).get('name_display', 'МРТ')
                     scheduled_time = scheduled_at.strftime("%d.%m.%Y в %H:%M")
                     
-                    reminder_message = f"Здравствуйте {patient_name}, напоминаем вам о записи у {doctor_name} на {service_name} к {scheduled_time}"
+                    reminder_message = f"Здравствуйте {patient_name}, напоминаем вам о записи у {doctor_name} на {service_name} через 2 часа в {scheduled_time}"
                 
                     try:
                         with httpx.Client() as client:
