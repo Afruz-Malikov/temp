@@ -15,6 +15,7 @@ CHATWOOT_API_KEY = os.getenv("CHATWOOT_API_KEY")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
+GOOGLE_API_DOCS_SECRET = os.getenv("GOOGLE_API_DOCS_SECRET")
 
 # Файл для хранения последнего обработанного времени
 LAST_PROCESSED_FILE = Path("last_processed.json")
