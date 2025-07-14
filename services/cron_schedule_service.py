@@ -16,6 +16,7 @@ CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
 GOOGLE_API_DOCS_SECRET = os.getenv("GOOGLE_API_DOCS_SECRET")
+APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY")
 
 # Файл для хранения последнего обработанного времени
 LAST_PROCESSED_FILE = Path("last_processed.json")
@@ -108,140 +109,45 @@ def send_chatwoot_message(phone, message, type="outgoing"):
 
 def process_items_cron():
     try:
-        # Получаем время последней обработки
         last_processed = get_last_processed_time()
         now = datetime.now(timezone.utc)
-        
         logger.info(f"🕐 Обработка данных с {last_processed.strftime('%Y-%m-%d %H:%M:%S')} до {now.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # 1. Получаем список клиник
         
-        # Здесь должен быть реальный API запрос для получения данных
-        # Пока используем тестовые данные
-        data = {
-            "success": True,
-            "result": [
-                {
-                    "id": "d2b2cf91-8eb3-11ef-b7d4-0050560c1b69",
-                    "clinic": {
-                        "id": "376bcf13-05d7-11e5-bc43-002590e38b62",
-                        "name": "Москва1 МРТ-Эксперт"
-                    },
-                    "patient": {
-                        "id": "365dd5c8-8ebe-11ef-b35f-0050560c262e",
-                        "firstname": "Илья",
-                        "lastname": "Анисимов",
-                        "middlename": "Николаевна",
-                        "birthdate": "1989-12-20",
-                        "sex": "F",
-                        "phone": "79255890919",
-                        "email": "template@bk.ru",
-                        "snils": "",
-                        "email_confirm": True
-                    },
-                    "items": [
-                        {
-                            "id": "808657a2-8ef0-4f8e-b3a3-25270192e116",
-                            "ris_id": [
-                                "4cc0661b-147d-4842-b4a3-96eb518a2b21"
-                            ],
-                            "service": {
-                                "id": "31d7dfc5-ac1f-11e9-b820-00505693b6f1",
-                                "names": {
-                                    "name_mz": "Магнитно-резонансная томография позвоночника (один отдел)/шейный отдел",
-                                    "name_display": "Магнитно-резонансная томография позвоночника (один отдел)/шейный отдел"
-                                },
-                                "duration": 30,
-                                "price": {
-                                    "amount": 5750,
-                                    "currency": "rub"
-                                }
-                            },
-                            "scheduled_at": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
-                            "status": "confirmed",
-                            "doctor": {
-                                "id": "9b3bfc64-cb60-11ee-b7ce-0050560c10ce",
-                                "firstname": "Никита",
-                                "lastname": "Стуколов",
-                            },
-                            "profession": {
-                                "id": "6cae07d0-67ba-11eb-b822-005056b387b3",
-                                "bank": False,
-                                "position": "Врач-рентгенолог",
-                                "position_id": "c1c325e4-86ca-11e9-b81f-00505693b6f1",
-                                "specialization": "МРТ.",
-                                "specialization_id": "a14f4089-b932-11ed-bc3b-00155d000204"
-                            },
-                            "provider": {
-                                "id": "83ad5a3e-bc83-11ec-b822-005056b3ebff",
-                                "name": "СберЗдоровье"
-                            },
-                            "refdoctor": None,
-                            "partners_finances": False
-                        }
-                    ],
-                   
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": "2025-07-05T10:17:58+03:00"
-                }
-            ],
-            "errors": [],
-            "info": {
-                "count": 3776,
-                "page": 1,
-                "more": True,
-                "limit": 1
-            }
+        clinics_url = "https://apitest.mrtexpert.ru/api/v3/clinics"
+        auth_header = {
+    "Authorization": f"Bearer {APPOINTMENTS_API_KEY}",
         }
-        
-        # Добавим дополнительные тестовые записи для демонстрации всех типов уведомлений
-        # Вторая запись для напоминания за день
-        second_obj = copy.deepcopy(data['result'][0])
-        second_item = copy.deepcopy(second_obj['items'][0])
-        second_item['scheduled_at'] = (now + timedelta(hours=23, minutes=30)).isoformat()
-        second_obj['items'] = [second_item]
-        second_obj['created_at'] = (now - timedelta(hours=25)).isoformat()
-        data['result'].append(second_obj)
-        
-        # Третья запись - новая запись
-        third_obj = copy.deepcopy(data['result'][0])
-        third_item = copy.deepcopy(third_obj['items'][0])
-        third_item['scheduled_at'] = (now + timedelta(hours=48)).isoformat()
-        third_obj['items'] = [third_item]
-        third_obj['created_at'] = now.isoformat()
-        data['result'].append(third_obj)
-        
-        # Настраиваем тестовые данные для разных сценариев
-        # Первая запись — для напоминания за 2 часа (до приема < 2 часа)
-        if data['result']:
-            first_obj = data['result'][0]
-            if first_obj.get('items'):
-                first_obj['items'][0]['scheduled_at'] = (now + timedelta(hours=1, minutes=59)).isoformat()
-                first_obj['created_at'] = (now - timedelta(hours=25)).isoformat()  # чтобы не было нового уведомления
-                logger.info(f"Первая запись настроена для напоминания за 2 часа: {first_obj['items'][0]['scheduled_at']}")
-        
-        # Вторая запись — для напоминания за день (до приема ~24 часа)
-        if len(data['result']) > 1:
-            second_obj = data['result'][1]
-            if second_obj.get('items'):
-                second_obj['items'][0]['scheduled_at'] = (now + timedelta(hours=23, minutes=30)).isoformat()
-                second_obj['created_at'] = (now - timedelta(hours=25)).isoformat()  # старая запись
-                logger.info(f"Вторая запись настроена для напоминания за день: {second_obj['items'][0]['scheduled_at']}")
-        
-        # Третья запись — новая запись (для тестирования создания записей)
-        if len(data['result']) > 2:
-            third_obj = data['result'][2]
-            if third_obj.get('items'):
-                third_obj['items'][0]['scheduled_at'] = (now + timedelta(hours=48)).isoformat()
-                third_obj['created_at'] = now.isoformat()  # НОВАЯ запись
-                logger.info(f"Третья запись настроена как НОВАЯ: {third_obj['items'][0]['scheduled_at']}")
-        
-        # Остальные записи — только к следующему запуску (до приема > 2 часа)
-        for i, obj in enumerate(data['result'][3:], start=3):
-            for item in obj.get('items', []):
-                item['scheduled_at'] = (now + timedelta(hours=72 + i)).isoformat()
-            obj['created_at'] = (now - timedelta(hours=1)).isoformat()
-            logger.info(f"Запись {i+1} настроена на будущее: {obj['items'][0]['scheduled_at']}")
-        
-        objects = data.get('result', [])
+        city_ids = [
+            "f66a00e6-179e-4de9-8ecb-78b0277c9f10",
+            "22eccffe-87e1-11ef-b7d4-0050560c1b69"
+        ]
+        try:
+            clinics_resp = httpx.get(clinics_url, timeout=20, headers=auth_header)
+            clinics_resp.raise_for_status()
+            clinics = clinics_resp.json().get("result", [])
+            filtered_clinics = [c for c in clinics if c.get("city_id") in city_ids]
+        except Exception as e:
+            logger.error(f"Ошибка при получении списка клиник: {e}")
+            filtered_clinics = []
+
+        # 2. Для каждой клиники получаем заявки (appointments)
+        all_appointments = []
+        for clinic in filtered_clinics:
+            cid = clinic.get("id")
+            if not cid:
+                continue
+            try:
+                app_url = f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}"
+                app_resp = httpx.get(app_url, timeout=20, headers=auth_header)
+                app_resp.raise_for_status()
+                appointments = app_resp.json().get("result", [])
+                all_appointments.extend(appointments)
+            except Exception as e:
+                logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
+
+        objects = all_appointments
         processed_count = 0
         for obj in objects:
             patient = obj.get('patient', {})
