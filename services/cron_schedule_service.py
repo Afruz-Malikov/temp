@@ -4,7 +4,6 @@ import httpx
 import os
 import time
 import copy
-import pyperclip
 import json
 from pathlib import Path
 
@@ -216,7 +215,6 @@ def process_items_cron():
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
         processed_count = 0
-        pyperclip.copy(json.dumps(all_appointments,ensure_ascii=False, indent=2))
         
         # Группируем записи по пользователю (телефону) и дате
         user_appointments = {}
