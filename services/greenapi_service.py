@@ -92,16 +92,6 @@ async def process_greenapi_webhook(request):
 
             if conversations:
                 conversation_id = conversations[0]["id"]
-                # Проверяем, назначен ли оператор
-                assignee_id = conversations[0].get("assignee_id")
-                if assignee_id:
-                    # Снимаем назначение, делаем чат open
-                    await client.patch(
-                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
-                        json={"assignee_id": None, "status": "open"},
-                        headers={"api_access_token": CHATWOOT_API_KEY}
-                    )
-                    logger.info(f"Снято назначение оператора с чата {conversation_id}")
                 msg_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                     json={"content": message, "message_type": "incoming"},
@@ -121,7 +111,7 @@ async def process_greenapi_webhook(request):
                 if not any(m.get("content") == message for m in gpt_messages if m["role"] == "user"):
                     gpt_messages.append({"role": "user", "content": message})
                 ai_reply = await call_ai_service(gpt_messages)
-                # ai_reply = json.dumps( {"type": "operator_connect"})
+                # ai_reply = {}
                 # --- Проверка на operator_connect ---
                 operator_connect = False
                 operator_message = None
@@ -134,13 +124,14 @@ async def process_greenapi_webhook(request):
                     pass
                 if operator_connect:
                     # Отправить сообщение всем операторам (в чат)
-                    notify_text = f"[Оператор] {operator_message}"
+                    notify_text = f"{operator_message}"
                     await client.post(
                         f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                        json={"content": notify_text, "message_type": "incoming"},
+                        json={"content": notify_text, "message_type": "outgoing"},
                         headers={"api_access_token": CHATWOOT_API_KEY}
                     )
                     logger.info(f"Оповещение операторов: {notify_text}")
+                    await unassign_conversation(phone)
                 else:
                     if ai_reply:
                         print("Ai reply:",ai_reply)
@@ -159,8 +150,7 @@ async def process_greenapi_webhook(request):
                         "contact_id": contact_id,
                         "source_id": sender_chat_id,
                         "additional_attributes": {},
-                        "status": "open",
-                        "assignee_id": None 
+                        "status": "open"
                     },
                     headers={"api_access_token": CHATWOOT_API_KEY}
                 )
@@ -196,13 +186,17 @@ async def process_greenapi_webhook(request):
                         pass
                     if operator_connect:
                         # Отправить сообщение всем операторам (в чат)
-                        notify_text = f"[Оператор] {operator_message}"
+                        notify_text = f"{operator_message}"
                         await client.post(
                             f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                            json={"content": notify_text, "message_type": "incoming"},
+                            json={"content": notify_text, "message_type": "outgoing"},
                             headers={"api_access_token": CHATWOOT_API_KEY}
                         )
                         logger.info(f"Оповещение операторов: {notify_text}")
+                        await unassign_conversation(phone)
+                        # Отправить сообщение в GreenAPI
+                        if notify_text:
+                            send_greenapi_message(f"{phone}@c.us", notify_text)
                     else:
                         if ai_reply:
                             print("Ai reply:",ai_reply)
@@ -238,6 +232,34 @@ async def call_ai_service(messages) -> str:
     except Exception as e:
         logger.exception("Ошибка OpenAI: %s", e)
         return f"[Ошибка OpenAI: {e}]"
+
+async def unassign_conversation(phone):
+    async with httpx.AsyncClient() as client:
+        # Найти контакт
+        contacts_resp = await client.get(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
+            headers={"api_access_token": CHATWOOT_API_KEY}
+        )
+        contacts = contacts_resp.json().get("payload", [])
+        contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
+        if not contact:
+            return
+        contact_id = contact["id"]
+        # Найти conversation
+        convs_resp = await client.get(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
+            headers={"api_access_token": CHATWOOT_API_KEY}
+        )
+        conversations = convs_resp.json().get("payload", [])
+        if not conversations:
+            return
+        conversation_id = conversations[0]["id"]
+        # Снять назначение
+        await client.patch(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
+            json={"assignee_id": None, "status": "open"},
+            headers={"api_access_token": CHATWOOT_API_KEY}
+        )
 
 def fetch_google_doc_text():
     """

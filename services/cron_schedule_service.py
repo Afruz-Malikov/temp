@@ -107,6 +107,17 @@ def send_chatwoot_message(phone, message, type="outgoing"):
     except Exception as e:
         logger.error(f"Ошибка отправки в Chatwoot: {e}")
 
+city_data = {
+    "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b": {
+        "site": "https://orz.mrtexpert.ru/",
+        "phone": "84961111111"
+    },
+    "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f": {
+        "site": "https://myt.mrtexpert.ru/",
+        "phone": "84972222222"
+    }
+}
+
 def process_items_cron():
     try:
         last_processed = get_last_processed_time()
@@ -120,21 +131,26 @@ def process_items_cron():
     "Authorization": f"Bearer {APPOINTMENTS_API_KEY}",
         }
         city_ids = [
-            "f66a00e6-179e-4de9-8ecb-78b0277c9f10",
-            "22eccffe-87e1-11ef-b7d4-0050560c1b69"
+            "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b",
+            "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f"
         ]
-        try:
-            clinics_resp = httpx.get(clinics_url, timeout=20, headers=auth_header)
-            clinics_resp.raise_for_status()
-            clinics = clinics_resp.json().get("result", [])
-            filtered_clinics = [c for c in clinics if c.get("city_id") in city_ids]
-        except Exception as e:
-            logger.error(f"Ошибка при получении списка клиник: {e}")
-            filtered_clinics = []
+        clinics = []
+        for city_id in city_ids:
+            clinics_url = f"https://apitest.mrtexpert.ru/api/v3/clinics?city_id={city_id}"
+            try:
+                clinics_resp = httpx.get(clinics_url, timeout=20, headers=auth_header)
+                clinics_resp.raise_for_status()
+                clinics.extend(clinics_resp.json().get("result", []))
+            except Exception as e:
+                logger.error(f"Ошибка при получении клиник для города {city_id}: {e}")
+
+        # Создаем словарь для быстрого доступа к полной информации о клинике по ее ID
+        clinic_map = {c['id']: c for c in clinics}
 
         # 2. Для каждой клиники получаем заявки (appointments)
+        print('copi', clinics)
         all_appointments = []
-        for clinic in filtered_clinics:
+        for clinic in clinics:
             cid = clinic.get("id")
             if not cid:
                 continue
@@ -151,7 +167,7 @@ def process_items_cron():
         processed_count = 0
         for obj in objects:
             patient = obj.get('patient', {})
-            phone = patient.get('phone')
+            phone =  "998998180817" or patient.get('phone')
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             created_at = None
@@ -177,16 +193,35 @@ def process_items_cron():
                 
                 delta = scheduled_at - now
                 
-                # Уведомление о новой записи (создана после последней обработки)
+                # Данные для шаблонов
+                clinic = obj.get('clinic', {})
+                full_clinic = clinic_map.get(clinic.get('id'), clinic)
+                city_id = full_clinic.get('city_id')
+                address = full_clinic.get('address', '—')
+                city_url = city_data.get(city_id, {}).get('site', full_clinic.get('city_url', 'https://mrtexpert.ru'))
+                directions = full_clinic.get('directions', '')
+                prep_url = full_clinic.get('prep_url', city_url)
+                phone_center = city_data.get(city_id, {}).get('phone', full_clinic.get('phone', '—'))
+                dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
+                time_str = scheduled_at.strftime('%H:%M')
+                # 1. Новая запись
                 if created_at and created_at > last_processed:
+                    new_record_message = (
+                        f"Здравствуйте!\n"
+                        f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
+                        f"Адрес: {address}, {directions}\n"
+                        f"Схема проезда {city_url}\n"
+                        f"В центре нужно быть за 15 минут до приема.\n"
+                        f"*Для вашего исследования необходима подготовка. Ознакомиться с ней можно по ссылке {prep_url}\n"
+                        f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
+                        f"Телефон для связи: {phone_center}"
+                    )
                     notified_new = False
                     # Формируем персонализированные сообщения
                     patient_name = f"{patient.get('lastname', '')} {patient.get('firstname', '')}".strip()
                     doctor_name = f"{item.get('doctor', {}).get('lastname', '')} {item.get('doctor', {}).get('firstname', '')}".strip()
                     service_name = item.get('service', {}).get('names', {}).get('name_display', 'МРТ')
                     scheduled_time = scheduled_at.strftime("%d.%m.%Y в %H:%M")
-                    
-                    new_record_message = f"Здравствуйте {patient_name}, вы успешно создали запись к {doctor_name} на {service_name} в {scheduled_time}"
                     
                     try:
                         with httpx.Client() as client:
@@ -228,16 +263,21 @@ def process_items_cron():
                     else:
                         logger.info(f"Item {item.get('id', 'нет id')} уже уведомлён о новой записи")
 
-                # Напоминание за день до приема (24 часа ± 1 час)
+                # 2. Подтверждение записи (24 часа ± 1 час)
                 if timedelta(hours=25) >= delta >= timedelta(hours=23):
+                    confirm_message = (
+                        f"Здравствуйте!\n"
+                        f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
+                        f"Подтвердите свой визит ответным сообщением (только цифра):\n"
+                        f"1 – подтверждаю\n2- прошу перенести  \n3 – прошу отменить\n"
+                        f"Телефон для связи {phone_center}"
+                    )
                     notified_day = False
                     # Формируем персонализированное напоминание за день
                     patient_name = f"{patient.get('lastname', '')} {patient.get('firstname', '')}".strip()
                     doctor_name = f"{item.get('doctor', {}).get('lastname', '')} {item.get('doctor', {}).get('firstname', '')}".strip()
                     service_name = item.get('service', {}).get('names', {}).get('name_display', 'МРТ')
                     scheduled_time = scheduled_at.strftime("%d.%m.%Y в %H:%M")
-                    
-                    day_reminder_message = f"Здравствуйте {patient_name}, напоминаем вам о записи завтра у {doctor_name} на {service_name} в {scheduled_time}"
                 
                     try:
                         with httpx.Client() as client:
@@ -265,7 +305,7 @@ def process_items_cron():
                                     msgs_resp.raise_for_status()
                                     messages = msgs_resp.json().get("payload", [])
                                     for msg in messages:
-                                        if msg.get("content") == day_reminder_message:
+                                        if msg.get("content") == confirm_message:
                                             notified_day = True
                                             break
                                     if notified_day:
@@ -273,23 +313,25 @@ def process_items_cron():
                     except Exception as e:
                         logger.warning(f"Ошибка при проверке сообщений о напоминании за день: {e}")
                     if not notified_day:
-                        send_chatwoot_message(phone, day_reminder_message)
+                        send_chatwoot_message(phone, confirm_message)
                         logger.info(f"Item {item.get('id', 'нет id')} напоминание за день: {scheduled_at_str}")
                         processed_count += 1
                     else:
                         logger.info(f"Item {item.get('id', 'нет id')} уже получил напоминание за день: {scheduled_at_str}")
 
-                # Напоминание за 2 часа до приема (проверяем, что не отправляли в последний час)
+                # 3. Напоминание за 2 часа до приема
                 if timedelta(hours=2) >= delta > timedelta(0):
-                    # отправить напоминание, если еще не отправляли
+                    reminder_message = (
+                        f"Здравствуйте!\n"
+                        f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
+                        f"Телефон для связи {phone_center}."
+                    )
                     notified = False
                     # Формируем персонализированное напоминание
                     patient_name = f"{patient.get('lastname', '')} {patient.get('firstname', '')}".strip()
                     doctor_name = f"{item.get('doctor', {}).get('lastname', '')} {item.get('doctor', {}).get('firstname', '')}".strip()
                     service_name = item.get('service', {}).get('names', {}).get('name_display', 'МРТ')
                     scheduled_time = scheduled_at.strftime("%d.%m.%Y в %H:%M")
-                    
-                    reminder_message = f"Здравствуйте {patient_name}, напоминаем вам о записи у {doctor_name} на {service_name} через 2 часа в {scheduled_time}"
                 
                     try:
                         with httpx.Client() as client:
