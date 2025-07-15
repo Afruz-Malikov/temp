@@ -167,7 +167,7 @@ def process_items_cron():
         processed_count = 0
         for obj in objects:
             patient = obj.get('patient', {})
-            phone =  "998998180817" or patient.get('phone')
+            phone =  "79255890919" or patient.get('phone')
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             created_at = None
