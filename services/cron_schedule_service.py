@@ -4,6 +4,7 @@ import httpx
 import os
 import time
 import copy
+import pyperclip
 import json
 from pathlib import Path
 
@@ -118,6 +119,59 @@ city_data = {
     }
 }
 
+PENDING_NOTIFICATIONS_FILE = Path("pending_notifications.json")
+
+def load_pending_notifications():
+    if PENDING_NOTIFICATIONS_FILE.exists():
+        try:
+            with open(PENDING_NOTIFICATIONS_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Ошибка при чтении pending_notifications: {e}")
+    return {}
+
+def save_pending_notifications(data):
+    try:
+        with open(PENDING_NOTIFICATIONS_FILE, 'w') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении pending_notifications: {e}")
+
+def get_last_user_message(phone):
+    # Возвращает последнее входящее сообщение пользователя (из Chatwoot)
+    try:
+        with httpx.Client() as client:
+            contacts_resp = client.get(
+                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
+                headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+            )
+            contacts_resp.raise_for_status()
+            contacts = contacts_resp.json().get("payload", [])
+            contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
+            if contact:
+                contact_id = contact["id"]
+                convs_resp = client.get(
+                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
+                    headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                )
+                convs_resp.raise_for_status()
+                conversations = convs_resp.json().get("payload", [])
+                for conv in conversations:
+                    conversation_id = conv["id"]
+                    msgs_resp = client.get(
+                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                        headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                    )
+                    msgs_resp.raise_for_status()
+                    messages = msgs_resp.json().get("payload", [])
+                    # Найти последнее входящее сообщение пользователя
+                    for msg in reversed(messages):
+                        if msg.get("message_type") == "incoming":
+                            return msg.get("content"), msg.get("created_at")
+    except Exception as e:
+        logger.warning(f"Ошибка при получении последнего сообщения пользователя: {e}")
+    return None, None
+
 def process_items_cron():
     try:
         last_processed = get_last_processed_time()
@@ -148,7 +202,6 @@ def process_items_cron():
         clinic_map = {c['id']: c for c in clinics}
 
         # 2. Для каждой клиники получаем заявки (appointments)
-        print('copi', clinics)
         all_appointments = []
         for clinic in clinics:
             cid = clinic.get("id")
@@ -162,23 +215,15 @@ def process_items_cron():
                 all_appointments.extend(appointments)
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
-
-        objects = all_appointments
         processed_count = 0
-        for obj in objects:
+        pyperclip.copy(json.dumps(all_appointments,ensure_ascii=False, indent=2))
+        
+        # Группируем записи по пользователю (телефону) и дате
+        user_appointments = {}
+        for obj in all_appointments:
             patient = obj.get('patient', {})
-            phone =  "79255890919" or patient.get('phone')
+            phone = patient.get('phone') or "998998180817"
             items = obj.get('items', [])
-            created_at_str = obj.get('created_at')
-            created_at = None
-            if created_at_str:
-                try:
-                    created_at = datetime.fromisoformat(created_at_str)
-                    if created_at.tzinfo is None:
-                        created_at = created_at.replace(tzinfo=timezone.utc)
-                except Exception as e:
-                    logger.warning(f"Некорректный формат времени created_at: {created_at_str}, ошибка: {e}")
-            
             for item in items:
                 scheduled_at_str = item.get('scheduled_at')
                 if not scheduled_at_str:
@@ -190,188 +235,129 @@ def process_items_cron():
                 except Exception as e:
                     logger.warning(f"Некорректный формат времени: {scheduled_at_str}, ошибка: {e}")
                     continue
-                
-                delta = scheduled_at - now
-                
-                # Данные для шаблонов
-                clinic = obj.get('clinic', {})
-                full_clinic = clinic_map.get(clinic.get('id'), clinic)
-                city_id = full_clinic.get('city_id')
-                address = full_clinic.get('address', '—')
-                city_url = city_data.get(city_id, {}).get('site', full_clinic.get('city_url', 'https://mrtexpert.ru'))
-                directions = full_clinic.get('directions', '')
-                prep_url = full_clinic.get('prep_url', city_url)
-                phone_center = city_data.get(city_id, {}).get('phone', full_clinic.get('phone', '—'))
-                dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
-                time_str = scheduled_at.strftime('%H:%M')
-                # 1. Новая запись
-                if created_at and created_at > last_processed:
-                    new_record_message = (
-                        f"Здравствуйте!\n"
-                        f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
-                        f"Адрес: {address}, {directions}\n"
-                        f"Схема проезда {city_url}\n"
-                        f"В центре нужно быть за 15 минут до приема.\n"
-                        f"*Для вашего исследования необходима подготовка. Ознакомиться с ней можно по ссылке {prep_url}\n"
-                        f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
-                        f"Телефон для связи: {phone_center}"
-                    )
-                    notified_new = False
-                    # Формируем персонализированные сообщения
-                    patient_name = f"{patient.get('lastname', '')} {patient.get('firstname', '')}".strip()
-                    doctor_name = f"{item.get('doctor', {}).get('lastname', '')} {item.get('doctor', {}).get('firstname', '')}".strip()
-                    service_name = item.get('service', {}).get('names', {}).get('name_display', 'МРТ')
-                    scheduled_time = scheduled_at.strftime("%d.%m.%Y в %H:%M")
-                    
+                # Логируем нужную запись
+                if scheduled_at_str.startswith("2025-07-16T13:10:00"):
+                    logger.info(f"[DEBUG] Найдена запись с scheduled_at=2025-07-16T13:10:00+03:00: obj={json.dumps(obj, ensure_ascii=False)}, item={json.dumps(item, ensure_ascii=False)}")
+                # Ключ: (phone, дата)
+                date_key = scheduled_at.date().isoformat()
+                created_at_str = obj.get('created_at')
+                created_at = None
+                if created_at_str:
                     try:
-                        with httpx.Client() as client:
-                            contacts_resp = client.get(
-                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
-                                headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                            )
-                            contacts_resp.raise_for_status()
-                            contacts = contacts_resp.json().get("payload", [])
-                            contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
-                            if contact:
-                                contact_id = contact["id"]
-                                convs_resp = client.get(
-                                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
-                                    headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                                )
-                                convs_resp.raise_for_status()
-                                conversations = convs_resp.json().get("payload", [])
-                                for conv in conversations:
-                                    conversation_id = conv["id"]
-                                    msgs_resp = client.get(
-                                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                                        headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                                    )
-                                    msgs_resp.raise_for_status()
-                                    messages = msgs_resp.json().get("payload", [])
-                                    for msg in messages:
-                                        if msg.get("content") == new_record_message:
-                                            notified_new = True
-                                            break
-                                    if notified_new:
-                                        break
+                        created_at = datetime.fromisoformat(created_at_str)
+                        if created_at.tzinfo is None:
+                            created_at = created_at.replace(tzinfo=timezone.utc)
                     except Exception as e:
-                        logger.warning(f"Ошибка при проверке сообщений о новой записи: {e}")
-                    if not notified_new:
-                        send_chatwoot_message(phone, new_record_message)
-                        logger.info(f"Item {item.get('id', 'нет id')} новая запись: {scheduled_at_str}")
-                        processed_count += 1
-                    else:
-                        logger.info(f"Item {item.get('id', 'нет id')} уже уведомлён о новой записи")
+                        logger.warning(f"Некорректный формат времени created_at: {created_at_str}, ошибка: {e}")
 
-                # 2. Подтверждение записи (24 часа ± 1 час)
-                if timedelta(hours=25) >= delta >= timedelta(hours=23):
-                    confirm_message = (
-                        f"Здравствуйте!\n"
-                        f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
-                        f"Подтвердите свой визит ответным сообщением (только цифра):\n"
-                        f"1 – подтверждаю\n2- прошу перенести  \n3 – прошу отменить\n"
-                        f"Телефон для связи {phone_center}"
-                    )
-                    notified_day = False
-                    # Формируем персонализированное напоминание за день
-                    patient_name = f"{patient.get('lastname', '')} {patient.get('firstname', '')}".strip()
-                    doctor_name = f"{item.get('doctor', {}).get('lastname', '')} {item.get('doctor', {}).get('firstname', '')}".strip()
-                    service_name = item.get('service', {}).get('names', {}).get('name_display', 'МРТ')
-                    scheduled_time = scheduled_at.strftime("%d.%m.%Y в %H:%M")
-                
-                    try:
-                        with httpx.Client() as client:
-                            contacts_resp = client.get(
-                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
-                                headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                user_appointments.setdefault(phone, {}).setdefault(date_key, []).append({
+                    'obj': obj,
+                    'item': item,
+                    'scheduled_at': scheduled_at,
+                    'created_at': created_at,
+                })
+        # Загружаем состояние уведомлений
+        pending_notifications = load_pending_notifications()
+        for phone, dates in user_appointments.items():
+            for date_key, appts in dates.items():
+                appts.sort(key=lambda x: x['scheduled_at'])
+                queue = appts
+                state = pending_notifications.get(phone, {}).get(date_key, {})
+                idx = state.get('last_sent_idx', 0)
+                last_sent_time = state.get('last_sent_time')
+                last_sent_type = state.get('last_sent_type')
+                last_sent_content = state.get('last_sent_content')
+                last_answer_time = state.get('last_answer_time')
+                answered = False
+                if last_sent_time:
+                    last_user_msg, last_user_msg_time = get_last_user_message(phone)
+                    if last_user_msg_time and last_user_msg_time > last_sent_time:
+                        answered = True
+                        state['last_answer_time'] = last_user_msg_time
+                if answered or not last_sent_time:
+                    if idx < len(queue):
+                        # Только одно уведомление за запуск крона
+                        entry = queue[idx]
+                        obj = entry['obj']
+                        item = entry['item']
+                        scheduled_at = entry['scheduled_at']
+                        created_at = entry['created_at']
+                        delta = scheduled_at - now
+                        clinic = obj.get('clinic', {})
+                        full_clinic = clinic_map.get(clinic.get('id'), clinic)
+                        city_id = full_clinic.get('city_id')
+                        address = full_clinic.get('address', '—')
+                        city_url = city_data.get(city_id, {}).get('site', full_clinic.get('city_url', 'https://mrtexpert.ru'))
+                        directions = full_clinic.get('directions', '')
+                        prep_url = full_clinic.get('prep_url', city_url)
+                        phone_center = city_data.get(city_id, {}).get('phone', full_clinic.get('phone', '—'))
+                        dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
+                        time_str = scheduled_at.strftime('%H:%M')
+                        # 1. Новая запись
+                        if created_at and created_at > last_processed:
+                            new_record_message = (
+                                f"Здравствуйте!\n"
+                                f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
+                                f"Адрес: {address}, {directions}\n"
+                                f"Схема проезда {city_url}\n"
+                                f"В центре нужно быть за 15 минут до приема.\n"
+                                f"*Для вашего исследования необходима подготовка. Ознакомиться с ней можно по ссылке {prep_url}\n"
+                                f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
+                                f"Телефон для связи: {phone_center}"
                             )
-                            contacts_resp.raise_for_status()
-                            contacts = contacts_resp.json().get("payload", [])
-                            contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
-                            if contact:
-                                contact_id = contact["id"]
-                                convs_resp = client.get(
-                                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
-                                    headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                                )
-                                convs_resp.raise_for_status()
-                                conversations = convs_resp.json().get("payload", [])
-                                for conv in conversations:
-                                    conversation_id = conv["id"]
-                                    msgs_resp = client.get(
-                                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                                        headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                                    )
-                                    msgs_resp.raise_for_status()
-                                    messages = msgs_resp.json().get("payload", [])
-                                    for msg in messages:
-                                        if msg.get("content") == confirm_message:
-                                            notified_day = True
-                                            break
-                                    if notified_day:
-                                        break
-                    except Exception as e:
-                        logger.warning(f"Ошибка при проверке сообщений о напоминании за день: {e}")
-                    if not notified_day:
-                        send_chatwoot_message(phone, confirm_message)
-                        logger.info(f"Item {item.get('id', 'нет id')} напоминание за день: {scheduled_at_str}")
-                        processed_count += 1
-                    else:
-                        logger.info(f"Item {item.get('id', 'нет id')} уже получил напоминание за день: {scheduled_at_str}")
-
-                # 3. Напоминание за 2 часа до приема
-                if timedelta(hours=2) >= delta > timedelta(0):
-                    reminder_message = (
-                        f"Здравствуйте!\n"
-                        f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
-                        f"Телефон для связи {phone_center}."
-                    )
-                    notified = False
-                    # Формируем персонализированное напоминание
-                    patient_name = f"{patient.get('lastname', '')} {patient.get('firstname', '')}".strip()
-                    doctor_name = f"{item.get('doctor', {}).get('lastname', '')} {item.get('doctor', {}).get('firstname', '')}".strip()
-                    service_name = item.get('service', {}).get('names', {}).get('name_display', 'МРТ')
-                    scheduled_time = scheduled_at.strftime("%d.%m.%Y в %H:%M")
-                
-                    try:
-                        with httpx.Client() as client:
-                            contacts_resp = client.get(
-                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
-                                headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                            send_chatwoot_message(phone, new_record_message)
+                            logger.info(f"[QUEUE] {phone} уведомление: {dt_str} (новая запись)")
+                            pending_notifications.setdefault(phone, {})[date_key] = {
+                                'last_sent_idx': idx + 1,
+                                'last_sent_time': datetime.now(timezone.utc).isoformat(),
+                                'last_sent_type': 'new_record',
+                                'last_sent_content': new_record_message,
+                                'last_answer_time': state.get('last_answer_time'),
+                            }
+                            processed_count += 1
+                            break  # Только одно уведомление за запуск
+                        # 2. Напоминание за день
+                        elif timedelta(hours=25) >= delta >= timedelta(hours=23):
+                            confirm_message = (
+                                f"Здравствуйте!\n"
+                                f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
+                                f"Подтвердите свой визит ответным сообщением (только цифра):\n"
+                                f"1 – подтверждаю\n2- прошу перенести  \n3 – прошу отменить\n"
+                                f"Телефон для связи {phone_center}"
                             )
-                            contacts_resp.raise_for_status()
-                            contacts = contacts_resp.json().get("payload", [])
-                            contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
-                            if contact:
-                                contact_id = contact["id"]
-                                convs_resp = client.get(
-                                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
-                                    headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                                )
-                                convs_resp.raise_for_status()
-                                conversations = convs_resp.json().get("payload", [])
-                                for conv in conversations:
-                                    conversation_id = conv["id"]
-                                    msgs_resp = client.get(
-                                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                                        headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                                    )
-                                    msgs_resp.raise_for_status()
-                                    messages = msgs_resp.json().get("payload", [])
-                                    for msg in messages:
-                                        if msg.get("content") == reminder_message:
-                                            notified = True
-                                            break
-                                    if notified:
-                                        break
-                    except Exception as e:
-                        logger.warning(f"Ошибка при проверке сообщений: {e}")
-                    if not notified:
-                        send_chatwoot_message(phone, reminder_message)
-                        logger.info(f"Item {item.get('id', 'нет id')} запланирован через 2 часа: {scheduled_at_str}")
-                        processed_count += 1
-                    else:
-                        logger.info(f"Item {item.get('id', 'нет id')} уже был уведомлен, повтор не требуется: {scheduled_at_str}")
+                            send_chatwoot_message(phone, confirm_message)
+                            logger.info(f"[QUEUE] {phone} уведомление: {dt_str} (напоминание за день)")
+                            pending_notifications.setdefault(phone, {})[date_key] = {
+                                'last_sent_idx': idx + 1,
+                                'last_sent_time': datetime.now(timezone.utc).isoformat(),
+                                'last_sent_type': 'confirm',
+                                'last_sent_content': confirm_message,
+                                'last_answer_time': state.get('last_answer_time'),
+                            }
+                            processed_count += 1
+                            break  # Только одно уведомление за запуск
+                        # 3. Напоминание за 2 часа
+                        elif timedelta(hours=2) >= delta > timedelta(0):
+                            reminder_message = (
+                                f"Здравствуйте!\n"
+                                f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
+                                f"Телефон для связи {phone_center}."
+                            )
+                            send_chatwoot_message(phone, reminder_message)
+                            logger.info(f"[QUEUE] {phone} уведомление: {dt_str} (напоминание за 2 часа)")
+                            pending_notifications.setdefault(phone, {})[date_key] = {
+                                'last_sent_idx': idx + 1,
+                                'last_sent_time': datetime.now(timezone.utc).isoformat(),
+                                'last_sent_type': 'reminder',
+                                'last_sent_content': reminder_message,
+                                'last_answer_time': state.get('last_answer_time'),
+                            }
+                            processed_count += 1
+                            break  # Только одно уведомление за запуск
+                        else:
+                            logger.info(f"[QUEUE] {phone} нет подходящего уведомления для {scheduled_at}")
+        # Сохраняем состояние уведомлений
+        save_pending_notifications(pending_notifications)
         # Сохраняем время последней обработки
         save_last_processed_time()
         logger.info(f"✅ Обработка завершена. Обработано элементов: {processed_count}")

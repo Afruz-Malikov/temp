@@ -112,11 +112,12 @@ async def process_greenapi_webhook(request):
                     gpt_messages.append({"role": "user", "content": message})
                 ai_reply = await call_ai_service(gpt_messages)
                 # ai_reply = {}
-                # --- Проверка на operator_connect ---
+                
                 operator_connect = False
                 operator_message = None
                 try:
                     parsed = json.loads(ai_reply)
+                    print(parsed)
                     if isinstance(parsed, dict) and parsed.get("type") == "operator_connect":
                         operator_connect = True
                         operator_message = parsed.get("message") or "Клиенту требуется оператор."
@@ -159,6 +160,20 @@ async def process_greenapi_webhook(request):
                 logger.info("Создан новый разговор: %s", new_conv)
                 conversation_id = new_conv.get("id")
                 if conversation_id:
+                    # 1. Синхронизируем историю из GreenAPI в Chatwoot
+                    greenapi_history = get_greenapi_chat_history(sender_chat_id, count=50)
+                    print(greenapi_history)
+                    for msg in reversed(greenapi_history):
+                        content = msg.get("textMessage", "")
+                        if not content:
+                            continue
+                        msg_type = "incoming" if msg.get("type") == "incoming" else "outgoing"
+                        await client.post(
+                            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                            json={"content": content, "message_type": msg_type},
+                            headers={"api_access_token": CHATWOOT_API_KEY}
+                        )
+                    # 2. Добавляем текущее входящее сообщение пользователя
                     msg_resp = await client.post(
                         f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                         json={"content": message, "message_type": "incoming"},
@@ -223,7 +238,7 @@ async def call_ai_service(messages) -> str:
     client = openai.AsyncOpenAI(api_key=OPEN_API_KEY)
     try:
         response = await client.chat.completions.create(
-            model="gpt-4.5-turbo",
+            model="gpt-4-turbo",
             messages=messages,
             temperature=0.7,
             max_tokens=512
