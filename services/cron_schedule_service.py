@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import os
 import json
+import pyperclip
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -88,9 +89,6 @@ def send_chatwoot_message(phone, message):
             )
             msg_resp.raise_for_status()
             logger.info(f"Chatwoot ответ: {msg_resp.text}")
-            # if phone != "79255890919":
-            #     # Отправить дублирующее сообщение на 79255890919
-            #     send_chatwoot_message("79255890919", message)
     except Exception as e:
         logger.error(f"Ошибка отправки в Chatwoot: {e}")
 
@@ -130,6 +128,7 @@ def process_items_cron():
                 logger.error(f"Ошибка при получении клиник для города {city_id}: {e}")
         clinic_map = {c['id']: c for c in clinics}
         all_appointments = []
+        
         for clinic in clinics:
             cid = clinic.get("id")
             if not cid:
@@ -144,15 +143,17 @@ def process_items_cron():
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
         processed_count = 0
         sent = False  
-
+        pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
         for obj in all_appointments:
             if sent:
                 break
             patient = obj.get('patient', {})
-            phone = patient.get('phone') 
+            phone = "998998180817" or patient.get('phone') 
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
+            updated_at_str = obj.get('updated_at')
             created_at = None
+            updated_at = None
             if created_at_str:
                 try:
                     created_at = datetime.fromisoformat(created_at_str)
@@ -160,6 +161,13 @@ def process_items_cron():
                         created_at = created_at.replace(tzinfo=timezone.utc)
                 except Exception as e:
                     logger.warning(f"Некорректный формат времени created_at: {created_at_str}, ошибка: {e}")
+            if updated_at_str:
+                try:
+                    updated_at = datetime.fromisoformat(updated_at_str)
+                    if updated_at.tzinfo is None:
+                        updated_at = updated_at.replace(tzinfo=timezone.utc)
+                except Exception as e:
+                    logger.warning(f"Некорректный формат времени updated_at: {updated_at_str}, ошибка: {e}")
             for item in items:
                 if sent:
                     break
@@ -186,7 +194,9 @@ def process_items_cron():
                 time_str = scheduled_at.strftime('%H:%M')
                 # 1. Новая запись (теперь по it em['created_at'])
                 item_created_at_str = item.get('created_at')
+                item_updated_at_str = item.get('updated_at')
                 item_created_at = None
+                item_updated_at = None
                 if item_created_at_str:
                     try:
                         item_created_at = datetime.fromisoformat(item_created_at_str)
@@ -194,7 +204,16 @@ def process_items_cron():
                             item_created_at = item_created_at.replace(tzinfo=timezone.utc)
                     except Exception as e:
                         logger.warning(f"Некорректный формат времени item.created_at: {item_created_at_str}, ошибка: {e}")
-                if item_created_at and item_created_at > last_processed:
+                if item_updated_at_str:
+                    try:
+                        item_updated_at = datetime.fromisoformat(item_updated_at_str)
+                        if item_updated_at.tzinfo is None:
+                            item_updated_at = item_updated_at.replace(tzinfo=timezone.utc)
+                    except Exception as e:  
+                        logger.warning(f"Некорректный формат времени item.updated_at: {item_updated_at_str}, ошибка: {e}")
+                if ((item_created_at and item_created_at > last_processed) or
+                    (item_updated_at and item_updated_at > last_processed) or
+                    (updated_at and updated_at > last_processed)):
                     new_record_message = (
                         f"Здравствуйте!\n"
                         f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
