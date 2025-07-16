@@ -128,7 +128,7 @@ def load_pending_notifications():
         except Exception as e:
             logger.warning(f"Ошибка при чтении pending_notifications: {e}")
     return {}
-
+            
 def save_pending_notifications(data):
     try:
         with open(PENDING_NOTIFICATIONS_FILE, 'w') as f:
@@ -352,8 +352,8 @@ def process_items_cron():
                             }
                             processed_count += 1
                             break  # Только одно уведомление за запуск
-                        else:
-                            logger.info(f"[QUEUE] {phone} нет подходящего уведомления для {scheduled_at}")
+                    else:
+                        logger.info(f"[QUEUE] {phone} нет подходящего уведомления для {scheduled_at}")
         # Сохраняем состояние уведомлений
         save_pending_notifications(pending_notifications)
         # Сохраняем время последней обработки

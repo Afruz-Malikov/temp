@@ -5,8 +5,10 @@ import re
 from dotenv import load_dotenv
 import openai
 from google.oauth2 import service_account
+from services.cron_schedule_service import send_greenapi_message
 from googleapiclient.discovery import build
 import json
+from dateutil import parser
 
 load_dotenv()
 
@@ -20,6 +22,71 @@ CHATWOOT_API_KEY = os.getenv("CHATWOOT_API_KEY")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
+
+APPOINTMENTS_API_URL = "https://apitest.mrtexpert.ru/api/v3/appointment_items"
+
+def extract_scheduled_at(message: str) -> str:
+    """
+    Извлекает дату и время appointment из текста уведомления.
+    Возвращает строку в формате 'YYYY-MM-DD HH:MM' или None, если не найдено.
+    """
+    import re
+    from datetime import date
+    # 1. Поиск полного шаблона с датой и временем (например, "на 2025-07-15 14:00")
+    match = re.search(r"на (\d{4}-\d{2}-\d{2} \d{2}:\d{2})", message)
+    if match:
+        return match.group(1)
+    # 2. Поиск "сегодня в HH:MM"
+    match = re.search(r"сегодня в (\d{2}:\d{2})", message)
+    if match:
+        today = date.today().strftime("%Y-%m-%d")
+        return f"{today} {match.group(1)}"
+    return None
+
+def normalize_dt(dt_str):
+    """
+    Приводит строку даты-времени к формату 'YYYY-MM-DD HH:MM'.
+    """
+    dt = parser.parse(dt_str)
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+async def find_item_id_by_scheduled_at(scheduled_at: str, token: str) -> str:
+    """
+    Ищет item_id по scheduled_at среди всех appointments.
+    Возвращает id найденного item или None.
+    """
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(APPOINTMENTS_API_URL, headers={"Authorization": f"Bearer {token}"})
+        resp.raise_for_status()
+        appointments = resp.json().get("items", [])
+        for appt in appointments:
+            for item in appt.get("items", []):
+                item_dt = normalize_dt(item.get("scheduled_at", ""))
+                if item_dt == scheduled_at:
+                    return item.get("id")
+    return None
+
+async def confirm_appointment_by_message(message: str, token: str):
+    """
+    Находит item_id по сообщению и подтверждает appointment (PATCH status=confirmed).
+    """
+    scheduled_at = extract_scheduled_at(message)
+    if not scheduled_at:
+        print("Не удалось извлечь дату/время из сообщения")
+        return
+    item_id = await find_item_id_by_scheduled_at(scheduled_at, token)
+    if not item_id:
+        print("Не найден item с таким scheduled_at")
+        return
+    patch_url = f"{APPOINTMENTS_API_URL}/{item_id}"
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            patch_url,
+            json={"status": "confirmed"},
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        resp.raise_for_status()
+        print(f"Item {item_id} подтвержден")
 
 def get_greenapi_chat_history(chat_id, count=20):
     """
@@ -135,14 +202,40 @@ async def process_greenapi_webhook(request):
                     await unassign_conversation(phone)
                 else:
                     if ai_reply:
-                        print("Ai reply:",ai_reply)
-                        ai_msg_resp = await client.post(
-                            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                            json={"content": ai_reply, "message_type": "outgoing"},
-                            headers={"api_access_token": CHATWOOT_API_KEY}
-                        )
-                        ai_msg_resp.raise_for_status()
-                        logger.info("AI ответ отправлен в разговор %s", conversation_id)
+                        print("Ai reply:", ai_reply)
+                        # --- Обработка подтверждения ---
+                        try:
+                            parsed = json.loads(ai_reply)
+                            if isinstance(parsed, dict) and parsed.get("type") == "confirm":
+                                # 1. Отправить благодарность в Chatwoot
+                                thank_you_msg = "Спасибо за потверждение записи.\nЖдем вас за 15 минут до приема"
+                                ai_msg_resp = await client.post(
+                                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                                    json={"content": thank_you_msg, "message_type": "outgoing"},
+                                    headers={"api_access_token": CHATWOOT_API_KEY}
+                                )
+                                ai_msg_resp.raise_for_status()
+                                logger.info("Благодарность отправлена в разговор %s", conversation_id)
+                                # 2. Подтвердить appointment через API
+                                from os import getenv
+                                token = getenv("APPOINTMENTS_API_KEY")
+                                if token:
+                                    await confirm_appointment_by_message(parsed.get("message", ""), token)
+                                else:
+                                    logger.warning("APPOINTMENTS_API_KEY не задан, не могу подтвердить appointment")
+                                return  # Не отправлять ai_reply как обычный ответ
+                        except Exception as e:
+                            logger.warning(f"Ошибка при обработке подтверждения: {e}")
+                        # --- Обычный AI ответ ---
+                        # Только если не confirm
+                        if not (isinstance(ai_reply, str) and ai_reply.strip().startswith('{')):
+                            ai_msg_resp = await client.post(
+                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                                json={"content": ai_reply, "message_type": "outgoing"},
+                                headers={"api_access_token": CHATWOOT_API_KEY}
+                            )
+                            ai_msg_resp.raise_for_status()
+                            logger.info("AI ответ отправлен в разговор %s", conversation_id)
             else:
                 conv_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
