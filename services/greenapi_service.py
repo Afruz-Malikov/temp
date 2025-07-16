@@ -243,7 +243,8 @@ async def process_greenapi_webhook(request):
                         "contact_id": contact_id,
                         "source_id": sender_chat_id,
                         "additional_attributes": {},
-                        "status": "open"
+                        "status": "open",
+                        "assignee_id": 3
                     },
                     headers={"api_access_token": CHATWOOT_API_KEY}
                 )

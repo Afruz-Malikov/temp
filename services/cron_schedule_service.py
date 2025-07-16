@@ -16,7 +16,7 @@ CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
 GOOGLE_API_DOCS_SECRET = os.getenv("GOOGLE_API_DOCS_SECRET")
-APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY")
+APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY") or 'CNvy6w6CRR1QLY2V6eq6gDQT'
 
 LAST_PROCESSED_FILE = Path("last_processed.json")
 
@@ -140,7 +140,7 @@ def process_items_cron():
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
         processed_count = 0
-        sent = False  # Флаг, что уведомление отправлено
+        sent = False  
 
         for obj in all_appointments:
             if sent:
@@ -181,8 +181,17 @@ def process_items_cron():
                 phone_center = city_data.get(city_id, {}).get('phone', full_clinic.get('phone', '—'))
                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
                 time_str = scheduled_at.strftime('%H:%M')
-                # 1. Новая запись
-                if created_at and created_at > last_processed:
+                # 1. Новая запись (теперь по it em['created_at'])
+                item_created_at_str = item.get('created_at')
+                item_created_at = None
+                if item_created_at_str:
+                    try:
+                        item_created_at = datetime.fromisoformat(item_created_at_str)
+                        if item_created_at.tzinfo is None:
+                            item_created_at = item_created_at.replace(tzinfo=timezone.utc)
+                    except Exception as e:
+                        logger.warning(f"Некорректный формат времени item.created_at: {item_created_at_str}, ошибка: {e}")
+                if item_created_at and item_created_at > last_processed:
                     new_record_message = (
                         f"Здравствуйте!\n"
                         f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
