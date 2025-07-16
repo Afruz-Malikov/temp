@@ -108,7 +108,7 @@ def process_items_cron():
         last_processed = get_last_processed_time()
         now = datetime.now(timezone.utc)
         logger.info(f"🕐 Обработка данных с {last_processed.strftime('%Y-%m-%d %H:%M:%S')} до {now.strftime('%Y-%m-%d %H:%M:%S')}")
-
+        
         clinics_url = "https://apitest.mrtexpert.ru/api/v3/clinics"
         auth_header = {
             "Authorization": f"Bearer {APPOINTMENTS_API_KEY}",
