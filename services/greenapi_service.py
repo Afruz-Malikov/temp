@@ -5,7 +5,6 @@ import re
 from dotenv import load_dotenv
 import openai
 from google.oauth2 import service_account
-from services.cron_schedule_service import send_greenapi_message
 from googleapiclient.discovery import build
 import json
 from dateutil import parser
