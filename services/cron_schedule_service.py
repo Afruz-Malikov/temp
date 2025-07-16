@@ -142,7 +142,7 @@ def process_items_cron():
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
         processed_count = 0
-        sent = False  
+        sent = False
         pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
         for obj in all_appointments:
             if sent:
@@ -264,8 +264,11 @@ def process_items_cron():
                         processed_count += 1
                         sent = True
                         break
-                # 2. Подтверждение записи (24 часа ± 1 час)
-                if timedelta(hours=25) >= delta >= timedelta(hours=23):
+                # 2. Подтверждение записи (напоминание за день)
+                scheduled_date = scheduled_at.date()
+                tomorrow = (now + timedelta(days=1)).date()
+                print(scheduled_date, tomorrow)
+                if scheduled_date == tomorrow:
                     confirm_message = (
                         f"Здравствуйте!\n"
                         f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
