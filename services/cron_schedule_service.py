@@ -88,6 +88,9 @@ def send_chatwoot_message(phone, message):
             )
             msg_resp.raise_for_status()
             logger.info(f"Chatwoot ответ: {msg_resp.text}")
+            # if phone != "79255890919":
+            #     # Отправить дублирующее сообщение на 79255890919
+            #     send_chatwoot_message("79255890919", message)
     except Exception as e:
         logger.error(f"Ошибка отправки в Chatwoot: {e}")
 
@@ -146,7 +149,7 @@ def process_items_cron():
             if sent:
                 break
             patient = obj.get('patient', {})
-            phone = "79255890919"  or patient.get('phone') 
+            phone = patient.get('phone') 
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             created_at = None

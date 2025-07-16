@@ -198,7 +198,6 @@ async def process_greenapi_webhook(request):
                         headers={"api_access_token": CHATWOOT_API_KEY}
                     )
                     logger.info(f"Оповещение операторов: {notify_text}")
-                    await unassign_conversation(phone)
                 else:
                     if ai_reply:
                         print("Ai reply:", ai_reply)
@@ -301,7 +300,6 @@ async def process_greenapi_webhook(request):
                             headers={"api_access_token": CHATWOOT_API_KEY}
                         )
                         logger.info(f"Оповещение операторов: {notify_text}")
-                        await unassign_conversation(phone)
                         # Отправить сообщение в GreenAPI
                         if notify_text:
                             send_greenapi_message(f"{phone}@c.us", notify_text)
@@ -340,34 +338,6 @@ async def call_ai_service(messages) -> str:
     except Exception as e:
         logger.exception("Ошибка OpenAI: %s", e)
         return f"[Ошибка OpenAI: {e}]"
-
-async def unassign_conversation(phone):
-    async with httpx.AsyncClient() as client:
-        # Найти контакт
-        contacts_resp = await client.get(
-            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
-            headers={"api_access_token": CHATWOOT_API_KEY}
-        )
-        contacts = contacts_resp.json().get("payload", [])
-        contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
-        if not contact:
-            return
-        contact_id = contact["id"]
-        # Найти conversation
-        convs_resp = await client.get(
-            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
-            headers={"api_access_token": CHATWOOT_API_KEY}
-        )
-        conversations = convs_resp.json().get("payload", [])
-        if not conversations:
-            return
-        conversation_id = conversations[0]["id"]
-        # Снять назначение
-        await client.patch(
-            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
-            json={"assignee_id": None, "status": "open"},
-            headers={"api_access_token": CHATWOOT_API_KEY}
-        )
 
 def fetch_google_doc_text():
     """
