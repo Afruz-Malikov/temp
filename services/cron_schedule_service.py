@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import os
 import json
-import pyperclip
+# import pyperclip
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -151,12 +151,12 @@ def process_items_cron():
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
         processed_count = 0
         sent = False
-        pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
+        # pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
         for obj in all_appointments:
             if sent:
                 break
             patient = obj.get('patient', {})
-            phone = "998998180817" or patient.get('phone')
+            phone = patient.get('phone') or "998998180817" 
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             updated_at_str = obj.get('updated_at')
