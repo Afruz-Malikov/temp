@@ -227,6 +227,12 @@ async def process_greenapi_webhook(request):
 
             if conversations:
                 conversation_id = conversations[0]["id"]
+                # Назначить оператора 3 на conversation
+                await client.patch(
+                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
+                    json={"assignee_id": 3},
+                    headers={"api_access_token": CHATWOOT_API_KEY}
+                )
                 msg_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                     json={"content": message, "message_type": "incoming"},
@@ -300,10 +306,10 @@ async def process_greenapi_webhook(request):
                             ai_msg_resp = await client.post(
                                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                                 json={"content": ai_reply, "message_type": "outgoing"},
-                                headers={"api_access_token": CHATWOOT_API_KEY}
-                            )
-                            ai_msg_resp.raise_for_status()
-                            logger.info("AI ответ отправлен в разговор %s", conversation_id)
+                        headers={"api_access_token": CHATWOOT_API_KEY}
+                    )
+                    ai_msg_resp.raise_for_status()
+                    logger.info("AI ответ отправлен в разговор %s", conversation_id)
             else:
                 conv_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
@@ -380,10 +386,10 @@ async def process_greenapi_webhook(request):
                             ai_msg_resp = await client.post(
                                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                                 json={"content": ai_reply, "message_type": "outgoing"},
-                                headers={"api_access_token": CHATWOOT_API_KEY}
-                            )
-                            ai_msg_resp.raise_for_status()
-                            logger.info("AI ответ отправлен в разговор %s", conversation_id)
+                            headers={"api_access_token": CHATWOOT_API_KEY}
+                        )
+                        ai_msg_resp.raise_for_status()
+                        logger.info("AI ответ отправлен в разговор %s", conversation_id)
                 else:
                     logger.warning("Не удалось получить ID созданного разговора.")
     except Exception as e:
@@ -408,7 +414,7 @@ async def call_ai_service(messages) -> str:
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.exception("Ошибка OpenAI: %s", e)
-        return f"[Ошибка OpenAI: {e}]"
+        return f"[Ошибка OpenAI: {e}]" 
 
 async def unassign_conversation(phone):
     async with httpx.AsyncClient() as client:

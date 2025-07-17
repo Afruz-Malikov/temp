@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import os
 import json
-# import pyperclip
+import pyperclip
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -68,12 +68,20 @@ def send_chatwoot_message(phone, message):
             conversations = convs_resp.json().get("payload", [])
             if conversations:
                 conversation_id = conversations[0]["id"]
+                # Назначить оператора 3 на conversation
+                answ = client.patch(
+                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
+                    json={"assignee_id": 2},
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}, timeout=10  
+                )
+                print("answ",answ)
             else:
                 conv_resp = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
                     json={
                         "inbox_id": int(CHATWOOT_INBOX_ID),
                         "contact_id": contact_id,
+                        
                         "source_id": f"{phone.replace('+', '')}@c.us",
                         "additional_attributes": {},
                         "status": "open"
@@ -143,12 +151,12 @@ def process_items_cron():
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
         processed_count = 0
         sent = False
-        # pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
+        pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
         for obj in all_appointments:
             if sent:
                 break
             patient = obj.get('patient', {})
-            phone =  patient.get('phone') or "998998180817" 
+            phone = "998998180817" or patient.get('phone')
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             updated_at_str = obj.get('updated_at')
