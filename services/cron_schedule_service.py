@@ -176,7 +176,7 @@ def process_items_cron():
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
         processed_count = 0
         sent = False
-        pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
+        # pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
         for obj in all_appointments:
             if sent:
                 break
