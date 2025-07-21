@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import os
 import json
-# import pyperclip
+import pyperclip
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -40,15 +40,31 @@ def save_last_processed_time():
     except Exception as e:
         logger.error(f"Ошибка при сохранении времени последней обработки: {e}")
 
+def get_all_chatwoot_contacts(client, base_url, account_id, api_key):
+    contacts = []
+    page = 1
+    while True:
+        resp = client.get(
+            f"{base_url}/api/v1/accounts/{account_id}/contacts",
+            params={"page": page},
+            headers={"api_access_token": api_key, "Content-Type": "application/json"},
+            timeout=10
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        payload = data.get("payload", [])
+        if not payload:
+            break
+        contacts.extend(payload)
+        if len(payload) < 15:
+            break
+        page += 1
+    return contacts
+
 def send_chatwoot_message(phone, message):
     try:
         with httpx.Client() as client:
-            contacts_resp = client.get(
-                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
-                headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}, timeout=10
-            )
-            contacts_resp.raise_for_status()
-            contacts = contacts_resp.json().get("payload", [])
+            contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
             contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
             if not contact:
                 contact_resp = client.post(
@@ -57,7 +73,15 @@ def send_chatwoot_message(phone, message):
                     headers={"api_access_token": CHATWOOT_API_KEY,"Content-Type": "application/json"}, timeout=10
                 )
                 contact_resp.raise_for_status()
-                contact_id = contact_resp.json().get("id")
+                contact_json = contact_resp.json()
+                contact_id = (
+                    contact_json.get("id")
+                    or contact_json.get("payload", {}).get("contact", {}).get("id")
+                    or contact_json.get("contact", {}).get("id")
+                )
+                if not contact_id:
+                    logger.error(f"Не удалось получить contact_id из ответа: {contact_resp.text}")
+                    return
             else:
                 contact_id = contact["id"]
             convs_resp = client.get(
@@ -71,7 +95,7 @@ def send_chatwoot_message(phone, message):
                 # Назначить оператора 3 на conversation
                 answ = client.patch(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
-                    json={"assignee_id": 2},
+                    json={"assignee_id": 3},
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}, timeout=10  
                 )
                 print("answ",answ)
@@ -81,7 +105,6 @@ def send_chatwoot_message(phone, message):
                     json={
                         "inbox_id": int(CHATWOOT_INBOX_ID),
                         "contact_id": contact_id,
-                        
                         "source_id": f"{phone.replace('+', '')}@c.us",
                         "additional_attributes": {},
                         "status": "open"
@@ -102,10 +125,12 @@ def send_chatwoot_message(phone, message):
 
 city_data = {
     "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b": {
+        "address": "г Орехово-Зуево, ул Дзержинского, стр. 41/1",
         "site": "https://orz.mrtexpert.ru/",
         "phone": "84961111111"
     },
     "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f": {
+        "address": "г Мытищи, ул Колпакова, д. 2А, помещ. 54",
         "site": "https://myt.mrtexpert.ru/",
         "phone": "84972222222"
     }
@@ -151,12 +176,12 @@ def process_items_cron():
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
         processed_count = 0
         sent = False
-        # pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
+        pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
         for obj in all_appointments:
             if sent:
                 break
             patient = obj.get('patient', {})
-            phone = patient.get('phone') or "998998180817" 
+            phone = "998998180817" or patient.get('phone')
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             updated_at_str = obj.get('updated_at')
@@ -196,7 +221,7 @@ def process_items_cron():
                 address = full_clinic.get('address', '—')
                 city_url = city_data.get(city_id, {}).get('site', full_clinic.get('city_url', 'https://mrtexpert.ru'))
                 directions = full_clinic.get('directions', '')
-                prep_url = full_clinic.get('prep_url', city_url)
+                prep_url = city_data.get(city_id, {}).get('address', full_clinic.get('address', '—'))
                 phone_center = city_data.get(city_id, {}).get('phone', full_clinic.get('phone', '—'))
                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
                 time_str = scheduled_at.strftime('%H:%M')
@@ -228,19 +253,14 @@ def process_items_cron():
                         f"Адрес: {address}, {directions}\n"
                         f"Схема проезда {city_url}\n"
                         f"В центре нужно быть за 15 минут до приема.\n"
-                        f"*Для вашего исследования необходима подготовка. Ознакомиться с ней можно по ссылке {prep_url}\n"
+                        # f"*Для вашего исследования необходима подготовка. Ознакомиться с ней можно по ссылке {prep_url}\n"
                         f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
                         f"Телефон для связи: {phone_center}"
                     )
                     notified_new = False
                     try:
                         with httpx.Client() as client:
-                            contacts_resp = client.get(
-                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
-                                headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                            )
-                            contacts_resp.raise_for_status()
-                            contacts = contacts_resp.json().get("payload", [])
+                            contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
                             contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
                             if contact:
                                 contact_id = contact["id"]
@@ -258,6 +278,7 @@ def process_items_cron():
                                     )
                                     msgs_resp.raise_for_status()
                                     messages = msgs_resp.json().get("payload", [])
+                                    logger.info(f"История сообщений для conversation_id={conversation_id}: {json.dumps(messages, ensure_ascii=False, indent=2)}")
                                     for msg in messages:
                                         if msg.get("content") == new_record_message:
                                             notified_new = True
@@ -287,12 +308,7 @@ def process_items_cron():
                     notified_day = False
                     try:
                         with httpx.Client() as client:
-                            contacts_resp = client.get(
-                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
-                                headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                            )
-                            contacts_resp.raise_for_status()
-                            contacts = contacts_resp.json().get("payload", [])
+                            contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
                             contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
                             if contact:
                                 contact_id = contact["id"]
@@ -310,6 +326,7 @@ def process_items_cron():
                                     )
                                     msgs_resp.raise_for_status()
                                     messages = msgs_resp.json().get("payload", [])
+                                    logger.info(f"История сообщений для conversation_id={conversation_id}: {json.dumps(messages, ensure_ascii=False, indent=2)}")
                                     for msg in messages:
                                         if msg.get("content") == confirm_message:
                                             notified_day = True
@@ -334,12 +351,7 @@ def process_items_cron():
                     notified = False
                     try:
                         with httpx.Client() as client:
-                            contacts_resp = client.get(
-                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
-                                headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                            )
-                            contacts_resp.raise_for_status()
-                            contacts = contacts_resp.json().get("payload", [])
+                            contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
                             contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
                             if contact:
                                 contact_id = contact["id"]
@@ -357,6 +369,7 @@ def process_items_cron():
                                     )
                                     msgs_resp.raise_for_status()
                                     messages = msgs_resp.json().get("payload", [])
+                                    logger.info(f"История сообщений для conversation_id={conversation_id}: {json.dumps(messages, ensure_ascii=False, indent=2)}")
                                     for msg in messages:
                                         if msg.get("content") == reminder_message:
                                             notified = True
