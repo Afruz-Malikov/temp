@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import os
 import json
-import pyperclip
+# import pyperclip
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -22,14 +22,11 @@ APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY") or 'CNvy6w6CRR1QLY2V6eq
 LAST_PROCESSED_FILE = Path("last_processed.json")
 
 def get_last_processed_time():
-    try:
-        if LAST_PROCESSED_FILE.exists():
-            with open(LAST_PROCESSED_FILE, 'r') as f:
-                data = json.load(f)
-                return datetime.fromisoformat(data['last_processed'])
-    except Exception as e:
-        logger.warning(f"Ошибка при чтении времени последней обработки: {e}")
-    return datetime.now(timezone.utc) - timedelta(hours=1)
+    tz_msk = timezone(timedelta(hours=3))
+    now = datetime.now(tz=tz_msk)
+    print('hop', now - timedelta(hours=1), now)
+    # Всегда возвращаем текущее время минус 1 час в UTC+3
+    return now - timedelta(hours=1)
 
 def save_last_processed_time():
     try:
@@ -177,11 +174,13 @@ def process_items_cron():
         processed_count = 0
         sent = False
         # pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
+        now = datetime.now(timezone.utc)
+        today = now.date()
         for obj in all_appointments:
             if sent:
                 break
             patient = obj.get('patient', {})
-            phone = patient.get('phone') or "998998180817" 
+            phone =  "998998180817" or patient.get('phone') 
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             updated_at_str = obj.get('updated_at')
@@ -201,9 +200,16 @@ def process_items_cron():
                         updated_at = updated_at.replace(tzinfo=timezone.utc)
                 except Exception as e:
                     logger.warning(f"Некорректный формат времени updated_at: {updated_at_str}, ошибка: {e}")
+            # Комбинированная логика: если created_at/updated_at позже last_processed ИЛИ сегодняшние
+            is_new = (
+                (created_at and created_at > last_processed) or
+                (updated_at and updated_at > last_processed) or
+                (created_at and created_at.date() == today) or
+                (updated_at and updated_at.date() == today)
+            )
+            if not is_new:
+                continue
             for item in items:
-                if sent:
-                    break
                 scheduled_at_str = item.get('scheduled_at')
                 if not scheduled_at_str:
                     continue
@@ -213,6 +219,9 @@ def process_items_cron():
                         scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
                 except Exception as e:
                     logger.warning(f"Некорректный формат времени: {scheduled_at_str}, ошибка: {e}")
+                    continue
+                # Пропускаем записи, если время приёма уже прошло
+                if scheduled_at < now:
                     continue
                 delta = scheduled_at - now
                 clinic = obj.get('clinic', {})
@@ -225,74 +234,52 @@ def process_items_cron():
                 phone_center = city_data.get(city_id, {}).get('phone', full_clinic.get('phone', '—'))
                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
                 time_str = scheduled_at.strftime('%H:%M')
-                # 1. Новая запись (теперь по it em['created_at'])
-                item_created_at_str = item.get('created_at')
-                item_updated_at_str = item.get('updated_at')
-                item_created_at = None
-                item_updated_at = None
-                if item_created_at_str:
-                    try:
-                        item_created_at = datetime.fromisoformat(item_created_at_str)
-                        if item_created_at.tzinfo is None:
-                            item_created_at = item_created_at.replace(tzinfo=timezone.utc)
-                    except Exception as e:
-                        logger.warning(f"Некорректный формат времени item.created_at: {item_created_at_str}, ошибка: {e}")
-                if item_updated_at_str:
-                    try:
-                        item_updated_at = datetime.fromisoformat(item_updated_at_str)
-                        if item_updated_at.tzinfo is None:
-                            item_updated_at = item_updated_at.replace(tzinfo=timezone.utc)
-                    except Exception as e:  
-                        logger.warning(f"Некорректный формат времени item.updated_at: {item_updated_at_str}, ошибка: {e}")
-                if ((item_created_at and item_created_at > last_processed) or
-                    (item_updated_at and item_updated_at > last_processed) or
-                    (updated_at and updated_at > last_processed)):
-                    new_record_message = (
-                        f"Здравствуйте!\n"
-                        f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
-                        f"Адрес: {address}, {directions}\n"
-                        f"Схема проезда {city_url}\n"
-                        f"В центре нужно быть за 15 минут до приема.\n"
-                        # f"*Для вашего исследования необходима подготовка. Ознакомиться с ней можно по ссылке {prep_url}\n"
-                        f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
-                        f"Телефон для связи: {phone_center}"
-                    )
-                    notified_new = False
-                    try:
-                        with httpx.Client() as client:
-                            contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
-                            contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
-                            if contact:
-                                contact_id = contact["id"]
-                                convs_resp = client.get(
-                                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
+                # Новая запись (только по obj.created_at/updated_at)
+                new_record_message = (
+                    f"Здравствуйте!\n"
+                    f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
+                    f"Адрес: {address}, {directions}\n"
+                    f"Схема проезда {city_url}\n"
+                    f"В центре нужно быть за 15 минут до приема.\n"
+                    # f"*Для вашего исследования необходима подготовка. Ознакомиться с ней можно по ссылке {prep_url}\n"
+                    f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
+                    f"Телефон для связи: {phone_center}"
+                )
+                notified_new = False
+                try:
+                    with httpx.Client() as client:
+                        contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
+                        contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
+                        if contact:
+                            contact_id = contact["id"]
+                            convs_resp = client.get(
+                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
+                                headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                            )
+                            convs_resp.raise_for_status()
+                            conversations = convs_resp.json().get("payload", [])
+                            for conv in conversations:
+                                conversation_id = conv["id"]
+                                msgs_resp = client.get(
+                                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                                     headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
                                 )
-                                convs_resp.raise_for_status()
-                                conversations = convs_resp.json().get("payload", [])
-                                for conv in conversations:
-                                    conversation_id = conv["id"]
-                                    msgs_resp = client.get(
-                                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                                        headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
-                                    )
-                                    msgs_resp.raise_for_status()
-                                    messages = msgs_resp.json().get("payload", [])
-                                    logger.info(f"История сообщений для conversation_id={conversation_id}: {json.dumps(messages, ensure_ascii=False, indent=2)}")
-                                    for msg in messages:
-                                        if msg.get("content") == new_record_message:
-                                            notified_new = True
-                                            break
-                                    if notified_new:
+                                msgs_resp.raise_for_status()
+                                messages = msgs_resp.json().get("payload", [])
+                                for msg in messages:
+                                    if msg.get("content") == new_record_message:
+                                        notified_new = True
                                         break
-                    except Exception as e:
-                        logger.warning(f"Ошибка при проверке сообщений о новой записи: {e}")
-                    if not notified_new:
-                        send_chatwoot_message(phone, new_record_message)
-                        logger.info(f"Item {item.get('id', 'нет id')} новая запись: {scheduled_at_str}")
-                        processed_count += 1
-                        sent = True
-                        break
+                                if notified_new:
+                                    break
+                except Exception as e:
+                    logger.warning(f"Ошибка при проверке сообщений о новой записи: {e}")
+                if not notified_new:
+                    send_chatwoot_message(phone, new_record_message)
+                    logger.info(f"Item {item.get('id', 'нет id')} новая запись: {scheduled_at_str}")
+                    processed_count += 1
+                    sent = True
+                    break
                 # 2. Подтверждение записи (напоминание за день)
                 scheduled_date = scheduled_at.date()
                 tomorrow = (now + timedelta(days=1)).date()
@@ -326,7 +313,6 @@ def process_items_cron():
                                     )
                                     msgs_resp.raise_for_status()
                                     messages = msgs_resp.json().get("payload", [])
-                                    logger.info(f"История сообщений для conversation_id={conversation_id}: {json.dumps(messages, ensure_ascii=False, indent=2)}")
                                     for msg in messages:
                                         if msg.get("content") == confirm_message:
                                             notified_day = True
@@ -369,7 +355,6 @@ def process_items_cron():
                                     )
                                     msgs_resp.raise_for_status()
                                     messages = msgs_resp.json().get("payload", [])
-                                    logger.info(f"История сообщений для conversation_id={conversation_id}: {json.dumps(messages, ensure_ascii=False, indent=2)}")
                                     for msg in messages:
                                         if msg.get("content") == reminder_message:
                                             notified = True
