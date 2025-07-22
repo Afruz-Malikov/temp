@@ -179,7 +179,7 @@ def process_items_cron():
         
         for obj in all_appointments:
             patient = obj.get('patient', {})
-            phone =   patient.get('phone') or "998998180817" 
+            phone =  patient.get('phone') 
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             updated_at_str = obj.get('updated_at')
@@ -203,21 +203,19 @@ def process_items_cron():
                 except Exception as e:
                     logger.warning(f"Некорректный формат времени updated_at: {updated_at_str}, ошибка: {e}")
             # Комбинированная логика: если created_at/updated_at позже last_processed ИЛИ сегодняшние
-            is_new = (
-                (created_at and created_at > last_processed) or
-                (updated_at and updated_at > last_processed) or
-                (created_at and created_at.date() == today) or
-                (updated_at and updated_at.date() == today)
-            )
-            if not is_new:
-                continue
+            # is_new = (
+            #     (created_at and created_at > last_processed) or
+            #     (updated_at and updated_at > last_processed) or
+            #     (created_at and created_at.date() == today) or
+            #     (updated_at and updated_at.date() == today)
+            # )
+
+            # if not is_new:
+            #     continue
             for item in items:
                 scheduled_at_str = item.get('scheduled_at')
                 if not scheduled_at_str:
                     continue
-                if scheduled_at < now:
-                     logger.info(f"⏩ Пропуск — прием уже прошёл: {scheduled_at}")
-                     continue
                 try:
                     scheduled_at = datetime.fromisoformat(scheduled_at_str)
                     if scheduled_at.tzinfo is None:
@@ -225,7 +223,6 @@ def process_items_cron():
                 except Exception as e:
                     logger.warning(f"Некорректный формат времени: {scheduled_at_str}, ошибка: {e}")
                     continue
-                # Пропускаем записи, если время приёма уже прошло
                 if scheduled_at < now:
                     continue
                 delta = scheduled_at - now
@@ -279,7 +276,7 @@ def process_items_cron():
                                     break
                 except Exception as e:
                     logger.warning(f"Ошибка при проверке сообщений о новой записи: {e}")
-                if not notified_new:
+                if not notified_new and ((created_at and created_at > last_processed) or(updated_at and updated_at > last_processed)):
                     send_chatwoot_message(phone, new_record_message)
                     logger.info(f"Item {item.get('id', 'нет id')} новая запись: {scheduled_at_str}")
                     processed_count += 1
@@ -288,7 +285,6 @@ def process_items_cron():
                 # 2. Подтверждение записи (напоминание за день)
                 scheduled_date = scheduled_at.date()
                 tomorrow = (now + timedelta(days=1)).date()
-                print(scheduled_date, tomorrow)
                 if scheduled_date == tomorrow:
                     confirm_message = (
                         f"Здравствуйте!\n"
@@ -332,7 +328,7 @@ def process_items_cron():
                         processed_count += 1
                         notified_phones.add(phone)
                         break
-                reminder_window_start = timedelta(hours=2) - timedelta(minutes=10)   # 1:50
+                reminder_window_start = timedelta(hours=2) - timedelta(minutes=20)   # 1:50
                 reminder_window_end = timedelta(hours=2) + timedelta(minutes=10) 
                 # 3. Напоминание за 2 часа до приема
                 if  reminder_window_start <= delta <= reminder_window_end:
