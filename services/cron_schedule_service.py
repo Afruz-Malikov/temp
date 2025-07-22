@@ -180,7 +180,7 @@ def process_items_cron():
             if sent:
                 break
             patient = obj.get('patient', {})
-            phone =   patient.get('phone') or "998998180817"
+            phone =   patient.get('phone') or "998998180817" 
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             updated_at_str = obj.get('updated_at')
@@ -327,8 +327,10 @@ def process_items_cron():
                         processed_count += 1
                         sent = True
                         break
+                reminder_window_start = timedelta(hours=2) - timedelta(minutes=10)   # 1:50
+                reminder_window_end = timedelta(hours=2) + timedelta(minutes=10) 
                 # 3. Напоминание за 2 часа до приема
-                if timedelta(hours=2) >= delta > timedelta(0):
+                if  reminder_window_start <= delta <= reminder_window_end:
                     reminder_message = (
                         f"Здравствуйте!\n"
                         f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
