@@ -185,6 +185,7 @@ def process_items_cron():
             updated_at_str = obj.get('updated_at')
             created_at = None
             updated_at = None
+            
             if not phone or phone in notified_phones:
                 continue
             if created_at_str:
@@ -212,8 +213,12 @@ def process_items_cron():
                 continue
             for item in items:
                 scheduled_at_str = item.get('scheduled_at')
+                
                 if not scheduled_at_str:
                     continue
+                if scheduled_at < now:
+                     logger.info(f"⏩ Пропуск — прием уже прошёл: {scheduled_at}")
+                     continue
                 try:
                     scheduled_at = datetime.fromisoformat(scheduled_at_str)
                     if scheduled_at.tzinfo is None:
