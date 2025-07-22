@@ -172,13 +172,12 @@ def process_items_cron():
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
         processed_count = 0
-        sent = False
+        notified_phones = set() 
         # pyperclip.copy(json.dumps(all_appointments, ensure_ascii=False, indent=2))
         now = datetime.now(timezone.utc)
         today = now.date()
+        
         for obj in all_appointments:
-            if sent:
-                break
             patient = obj.get('patient', {})
             phone =   patient.get('phone') or "998998180817" 
             items = obj.get('items', [])
@@ -186,6 +185,8 @@ def process_items_cron():
             updated_at_str = obj.get('updated_at')
             created_at = None
             updated_at = None
+            if not phone or phone in notified_phones:
+                continue
             if created_at_str:
                 try:
                     created_at = datetime.fromisoformat(created_at_str)
@@ -278,7 +279,7 @@ def process_items_cron():
                     send_chatwoot_message(phone, new_record_message)
                     logger.info(f"Item {item.get('id', 'нет id')} новая запись: {scheduled_at_str}")
                     processed_count += 1
-                    sent = True
+                    notified_phones.add(phone)
                     break
                 # 2. Подтверждение записи (напоминание за день)
                 scheduled_date = scheduled_at.date()
@@ -325,7 +326,7 @@ def process_items_cron():
                         send_chatwoot_message(phone, confirm_message)
                         logger.info(f"Item {item.get('id', 'нет id')} напоминание за день: {scheduled_at_str}")
                         processed_count += 1
-                        sent = True
+                        notified_phones.add(phone)
                         break
                 reminder_window_start = timedelta(hours=2) - timedelta(minutes=10)   # 1:50
                 reminder_window_end = timedelta(hours=2) + timedelta(minutes=10) 
@@ -369,7 +370,7 @@ def process_items_cron():
                         send_chatwoot_message(phone, reminder_message)
                         logger.info(f"Item {item.get('id', 'нет id')} запланирован через 2 часа: {scheduled_at_str}")
                         processed_count += 1
-                        sent = True
+                        notified_phones.add(phone)
                         break
         save_last_processed_time()
         logger.info(f"✅ Обработка завершена. Обработано элементов: {processed_count}")
