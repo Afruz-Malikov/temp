@@ -213,7 +213,6 @@ def process_items_cron():
                 continue
             for item in items:
                 scheduled_at_str = item.get('scheduled_at')
-                
                 if not scheduled_at_str:
                     continue
                 if scheduled_at < now:
