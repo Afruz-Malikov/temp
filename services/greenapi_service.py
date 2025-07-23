@@ -129,11 +129,14 @@ async def confirm_appointment_by_message(message: str):
     # items: только нужные поля
     patch_items = []
     for it in new_items:
+        provider_id = it.get("provider_id") or (it.get("provider") or {}).get("id")
+        if provider_id == "00000000-0000-0000-0000-000000000000":
+            provider_id = ""
         patch_item = {
             "service_id": it.get("service_id") or (it.get("service") or {}).get("id"),
             "scheduled_at": it.get("scheduled_at"),
             "status": it.get("status"),
-            "provider_id": it.get("provider_id") or (it.get("provider") or {}).get("id"),
+            "provider_id": provider_id,
             "refdoctor_id": it.get("refdoctor_id") or (it.get("refdoctor") or {}).get("id"),
             "doctor_id": it.get("doctor_id") or (it.get("doctor") or {}).get("id"),
             "partners_finances": it.get("partners_finances", False)
@@ -141,7 +144,7 @@ async def confirm_appointment_by_message(message: str):
         patch_items.append(patch_item)
     patch_body = {
         "clinic_id": appt.get("clinic").get("id"),
-        "patient_id": appt.get("patient").get("id"),
+        "patient_id": appt.get("patient").get("id") or "",
         "patient": patch_patient,
         "items": patch_items
     }

@@ -11,7 +11,6 @@ from services.cron_schedule_service import process_items_cron
 logger = logging.getLogger("uvicorn.webhook")
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
-
 app = FastAPI()
 app.include_router(greenapi_router)
 app.include_router(chatwoot_router)
