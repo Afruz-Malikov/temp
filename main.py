@@ -7,7 +7,10 @@ from routes.chatwoot import chatwoot_router
 from apscheduler.schedulers.background import BackgroundScheduler
 import httpx
 from services.cron_schedule_service import process_items_cron
+from db import Base, engine
+from models.sended_message import SendedMessage
 
+Base.metadata.create_all(bind=engine)
 logger = logging.getLogger("uvicorn.webhook")
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
@@ -24,7 +27,7 @@ def my_cron_job():
         logger.error(f"Ошибка при выполнении крон задачи: {e}")
 
 scheduler = BackgroundScheduler()   
-scheduler.add_job(my_cron_job, 'cron', hour='*')      
+scheduler.add_job(my_cron_job, 'cron', second='*/30')      
 
 scheduler.start()
 

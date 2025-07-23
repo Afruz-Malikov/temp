@@ -14,3 +14,6 @@ python-dateutil>=2.8.0
 aiofiles>=0.8.0
 pyperclip>=1.8.0
 loguru>=0.7.0
+sqlalchemy>=1.4.0,<2.0.0
+psycopg2-binary>=2.9.0
+pytz>=2021.1

@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  fastapi-backend:
+    container_name: webhooksApis
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - '8000:8000'
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    restart: always
+
+  postgres:
+    image: postgres:14
+    restart: always
+    environment:
+      POSTGRES_USER: hulk
+      POSTGRES_PASSWORD: strongpassword123
+      POSTGRES_DB: webhookdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+
+volumes:
+  postgres_data:
