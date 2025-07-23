@@ -179,7 +179,7 @@ def process_items_cron():
         
         for obj in all_appointments:
             patient = obj.get('patient', {})
-            phone = "998998180817" or patient.get('phone') 
+            phone =  patient.get('phone') or "998998180817"
             items = obj.get('items', [])
             created_at_str = obj.get('created_at')
             updated_at_str = obj.get('updated_at')
