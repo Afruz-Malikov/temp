@@ -10,7 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pytz import timezone as pytz_timezone
 
-moscow_tz = pytz_timezone("Europe/Moscow")
+# moscow_tz = pytz_timezone("Europe/Moscow")
 
 
 load_dotenv()
@@ -144,7 +144,7 @@ def process_items_cron():
         last_processed = get_last_processed_time()
         now = datetime.now(timezone.utc)
         logger.info(f"🕐 Обработка данных с {last_processed.strftime('%Y-%m-%d %H:%M:%S')} до {now.strftime('%Y-%m-%d %H:%M:%S')}")
-        moscow_time = now.astimezone(moscow_tz)
+        # moscow_time = now.astimezone(moscow_tz)
         clinics_url = "https://apitest.mrtexpert.ru/api/v3/clinics"
         auth_header = {"Authorization": f"Bearer {APPOINTMENTS_API_KEY}"}
         city_ids = ["0f2f2d09-8e7a-4356-bd4d-0b055d802e7b", "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f"]
@@ -204,11 +204,9 @@ def process_items_cron():
 
                 if scheduled_at < now:
                     continue
-
                 delta = scheduled_at - now
                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
                 time_str = scheduled_at.strftime('%H:%M')
-
                 clinic = obj.get('clinic', {})
                 full_clinic = clinic_map.get(clinic.get("id"), clinic)
                 address = full_clinic.get("address", "—")
@@ -217,7 +215,7 @@ def process_items_cron():
                 # Проверка в БД
                 sent_new = db.query(SendedMessage).filter_by(appointment_id=item_id, type="new_remind").first()
                 if not sent_new:
-                    if 0 <= moscow_time.hour < 6:
+                    if 0 <= scheduled_at.hour < 7:
                         logger.info(f"🌙 Ночь: пропускаем сообщение типа new_remind для {item_id}")
                         continue
                     # 1. Новое сообщение
@@ -251,8 +249,9 @@ def process_items_cron():
                     continue
 
                 # 2. Напоминание за день
-                if scheduled_at.date() == (now + timedelta(days=1)).date():
-                    if 0 <= moscow_time.hour < 6:
+                minutes_to_appointment = int(delta.total_seconds() / 60)
+                if 1400 <= minutes_to_appointment <= 1450:
+                    if 0 <= scheduled_at.hour < 7:
                         logger.info(f"🌙 Ночь: пропускаем сообщение типа new_remind для {item_id}")
                         continue
                     confirm_msg = (
