@@ -184,7 +184,7 @@ def process_items_cron():
 
         for obj in all_appointments:
             patient = obj.get("patient", {})
-            phone = patient.get("phone") or "998998180817"
+            phone = patient.get("phone") or "998998180817" 
             if not phone or phone in notified_phones:
                 continue
 
@@ -250,7 +250,7 @@ def process_items_cron():
 
                 # 2. Напоминание за день
                 minutes_to_appointment = int(delta.total_seconds() / 60)
-                if 1400 <= minutes_to_appointment <= 1450:
+                if 1439 <= minutes_to_appointment <= 1455:
                     if 0 <= scheduled_at.hour < 7:
                         logger.info(f"🌙 Ночь: пропускаем сообщение типа new_remind для {item_id}")
                         continue
@@ -272,7 +272,7 @@ def process_items_cron():
                         continue
 
                 # 3. Напоминание за 2 часа
-                if timedelta(hours=1, minutes=50) <= delta <= timedelta(hours=2, minutes=10):
+                if timedelta(hours=1, minutes=59) <= delta <= timedelta(hours=2, minutes=20):
                     remind_msg = (
                         f"Здравствуйте!\n"
                         f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
