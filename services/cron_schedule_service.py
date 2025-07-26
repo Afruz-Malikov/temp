@@ -250,7 +250,7 @@ def process_items_cron():
 
                 # 2. Напоминание за день
                 minutes_to_appointment = int(delta.total_seconds() / 60)
-                if 1439 <= minutes_to_appointment <= 1455:
+                if 1400 <= minutes_to_appointment <= 1450:
                     if 0 <= scheduled_at.hour < 7:
                         logger.info(f"🌙 Ночь: пропускаем сообщение типа new_remind для {item_id}")
                         continue
