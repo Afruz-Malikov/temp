@@ -180,14 +180,19 @@ async def process_greenapi_webhook(request):
     if body.get("typeWebhook") != "incomingMessageReceived":
         logger.info("Пропущен вебхук не того типа")
         return {"status": "ignored"}
-    message = body.get("messageData", {}).get("textMessageData", {}).get("textMessage", "")
+    message = ""
+    msg_data = body.get("messageData", {})
+    if msg_data.get("typeMessage") == "textMessage":
+        message = msg_data.get("textMessageData", {}).get("textMessage", "")
+    elif msg_data.get("typeMessage") == "extendedTextMessage":
+        message = msg_data.get("extendedTextMessageData", {}).get("text", "")
+
     sender_chat_id = body.get("senderData", {}).get("chatId", "")
     sender_name = body.get("senderData", {}).get("senderName", "")
 
     if not message or not sender_chat_id:
         logger.warning("Нет текста или sender_chat_id")
         return {"status": "no content"}
-
     phone = sender_chat_id.replace("@c.us", "")
     formatted_phone = f"+{phone}"
 

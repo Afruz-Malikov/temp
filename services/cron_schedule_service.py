@@ -188,7 +188,7 @@ def process_items_cron():
             if not phone or phone in notified_phones:
                 continue
 
-            items = obj.get("items", [])
+            items = obj.get("items", [])    
             for item in items:
                 item_id = item.get("id")
                 scheduled_at_str = item.get("scheduled_at")
@@ -274,8 +274,10 @@ def process_items_cron():
                 # 3. Напоминание за 2 часа
                 if timedelta(hours=1, minutes=50) <= delta <= timedelta(hours=2):
                     remind_msg = (
+                        
                         f"Здравствуйте!\n"
                         f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
+                        f"центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                         f"Телефон для связи {phone_center}."
                     )
                     sent_remind = db.query(SendedMessage).filter_by(appointment_id=item_id, type="hour_remind").first()
