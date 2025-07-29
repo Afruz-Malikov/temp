@@ -182,17 +182,21 @@ async def process_greenapi_webhook(request):
         return {"status": "ignored"}
     message = ""
     msg_data = body.get("messageData", {})
-    if msg_data.get("typeMessage") == "textMessage":
-        message = msg_data.get("textMessageData", {}).get("textMessage", "")
-    elif msg_data.get("typeMessage") == "extendedTextMessage":
-        message = msg_data.get("extendedTextMessageData", {}).get("text", "")
+    msg_type = msg_data.get("typeMessage")
+
+    if msg_type == "textMessage":
+            message = msg_data.get("textMessageData", {}).get("textMessage", "")
+    elif msg_type == "extendedTextMessage":
+            message = msg_data.get("extendedTextMessageData", {}).get("text", "")
+    elif msg_type == "quotedMessage":
+            message = msg_data.get("extendedTextMessageData", {}).get("text", "")
 
     sender_chat_id = body.get("senderData", {}).get("chatId", "")
     sender_name = body.get("senderData", {}).get("senderName", "")
 
     if not message or not sender_chat_id:
-        logger.warning("Нет текста или sender_chat_id")
-        return {"status": "no content"}
+            logger.warning("Нет текста или sender_chat_id")
+            return {"status": "no content"}
     phone = sender_chat_id.replace("@c.us", "")
     formatted_phone = f"+{phone}"
 
