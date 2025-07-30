@@ -133,9 +133,9 @@ city_data = {
         "phone": "84961111111"
     },
     "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f": {
-        "address": "г Мытищи, ул Колпакова, д. 2А, помещ. 54",
+        "address": "г Мытищи, ул Колпакова, д. 2А,  помещ. 54",
         "site": "https://myt.mrtexpert.ru/",
-        "phone": "84972222222"
+        "phone": "84953080411"
     }
 }
 def process_items_cron():
@@ -187,11 +187,14 @@ def process_items_cron():
             phone = patient.get("phone") or "998180817" 
             if not phone or phone in notified_phones:
                 continue
-
+            
             items = obj.get("items", [])    
             for item in items:
                 item_id = item.get("id")
+                # item_status = item.get("status")
                 scheduled_at_str = item.get("scheduled_at")
+                # if item_status == 'canceled':
+                #     continue
                 if not scheduled_at_str:
                     continue
                 try:
@@ -201,7 +204,6 @@ def process_items_cron():
                 except Exception as e:
                     logger.warning(f"Неверный формат времени: {scheduled_at_str}, ошибка: {e}")
                     continue
-
                 if scheduled_at < now:
                     continue
                 delta = scheduled_at - now
