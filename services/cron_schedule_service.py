@@ -5,7 +5,6 @@ import os
 import json
 from db import SessionLocal
 from models.sended_message import SendedMessage
-import pyperclip
 from pathlib import Path
 from dotenv import load_dotenv
 
