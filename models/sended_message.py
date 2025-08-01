@@ -7,3 +7,8 @@ class SendedMessage(Base):
     id = Column(Integer, primary_key=True, index=True)
     appointment_id = Column(String, index=True)
     type = Column(String)
+    phone_number =  Column(String) 
+    phone_center =  Column(String) 
+    scheduled_at = Column(String)              
+    
+    
