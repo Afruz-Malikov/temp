@@ -314,7 +314,7 @@ def process_items_cron():
         notified_phones = set()
         for obj in all_appointments:
             patient = obj.get("patient", {})
-            phone = "998998180817" or patient.get("phone") 
+            phone =  patient.get("phone") 
             if not phone or phone in notified_phones:
                 continue
             items = obj.get("items", [])    
