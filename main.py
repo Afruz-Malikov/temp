@@ -7,6 +7,7 @@ from routes.chatwoot import chatwoot_router
 from apscheduler.schedulers.background import BackgroundScheduler
 import httpx
 from services.cron_schedule_service import process_items_cron
+from services.cron_schedule_service import cleanup_old_messages
 from db import Base, engine
 from models.sended_message import SendedMessage
 
@@ -28,7 +29,7 @@ def my_cron_job():
 
 scheduler = BackgroundScheduler()   
 scheduler.add_job(my_cron_job, 'cron', minute='*/5')      
-
+scheduler.add_job(cleanup_old_messages, 'cron', hour=7, minute=0) 
 scheduler.start()
 
 @app.get("/")

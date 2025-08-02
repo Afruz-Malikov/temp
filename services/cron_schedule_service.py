@@ -127,14 +127,13 @@ city_data = {
 def save_last_processed_time(): 
     try:
         db = SessionLocal()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)    
         local_hour = now.astimezone(timezone(timedelta(hours=3))).hour 
         with open(LAST_PROCESSED_FILE, 'w') as f:
             json.dump({'last_processed': now.isoformat()}, f)
             pending_messages = db.query(SendedMessage).filter(
             SendedMessage.type.in_(["pending", "pending_new", "pending_day"])
             ).all()
-
         processed_count = 0
         notified_phones = set()
         for msg in pending_messages:
@@ -173,7 +172,9 @@ def save_last_processed_time():
                         f"Телефон для связи: {phone_center}"
                     )
                     send_chatwoot_message(phone, new_msg)
-                    db.add(SendedMessage(appointment_id=msg.appointment_id, type="new_remind"))
+                    db.add(SendedMessage(appointment_id=msg.appointment_id, type="new_remind",scheduled_at=msg.scheduled_at,
+                            phone_number=phone,
+                            phone_center=phone_center))
                     is_already_created_pending_message = db.query(SendedMessage).filter(
                     SendedMessage.appointment_id == msg.appointment_id,
                     SendedMessage.type == "pending"
@@ -202,7 +203,9 @@ def save_last_processed_time():
                         f"Телефон для связи {phone_center}"
                     )
                     send_chatwoot_message(phone, day_msg)
-                    db.add(SendedMessage(appointment_id=msg.appointment_id, type="day_remind"))
+                    db.add(SendedMessage(appointment_id=msg.appointment_id, type="day_remind",scheduled_at=msg.scheduled_at,
+                            phone_number=phone,
+                            phone_center=phone_center))
                     is_already_created_pending_message = db.query(SendedMessage).filter(
                     SendedMessage.appointment_id == msg.appointment_id,
                     SendedMessage.type == "pending"
@@ -230,7 +233,9 @@ def save_last_processed_time():
                         f"Телефон для связи {phone_center}."
                     )
                     send_chatwoot_message(phone, hour_msg)
-                    db.add(SendedMessage(appointment_id=msg.appointment_id, type="hour_remind"))
+                    db.add(SendedMessage(appointment_id=msg.appointment_id, type="hour_remind",scheduled_at=msg.scheduled_at,
+                            phone_number=phone,
+                            phone_center=phone_center))
                     db.commit()
                     logger.info(f"⏰ Утром отправлено hour_remind из pending: {msg.appointment_id}")
                     processed_count += 1
@@ -243,7 +248,9 @@ def save_last_processed_time():
                         f"Телефон для связи: {phone_center}"
                     )
                     send_chatwoot_message(phone, day_msg)
-                    db.add(SendedMessage(appointment_id=msg.appointment_id, type="day_remind"))
+                    db.add(SendedMessage(appointment_id=msg.appointment_id, type="day_remind",scheduled_at=msg.scheduled_at,
+                            phone_number=phone,
+                            phone_center=phone_center))
                     db.commit()
                     logger.info(f"📆 Утром отправлено day_remind из pending_day: {msg.appointment_id}")
                     processed_count += 1
@@ -255,7 +262,8 @@ def save_last_processed_time():
 
     except Exception as e:
         logger.error(f"❌ Ошибка в save_last_processed_time: {e}")
-
+    finally: 
+        db.close()
 def process_items_cron():
     db = SessionLocal()
     try:
@@ -400,7 +408,9 @@ def process_items_cron():
                             logger.info(f"📄 Отправлено сообщение с подготовкой: {item_id}")
                     except Exception as e:
                         logger.warning(f"Ошибка получения подготовки: {e}")
-                    db.add(SendedMessage(appointment_id=item_id, type="new_remind"))
+                    db.add(SendedMessage(appointment_id=item_id, type="new_remind",scheduled_at=scheduled_at_str,
+                            phone_number=phone,
+                            phone_center=phone_center))
                     db.add(SendedMessage(appointment_id=item_id, type="pending",scheduled_at=scheduled_at_str,phone_number=phone,phone_center=phone_center ))
                     db.commit()
                     logger.info(f"🟢 Новая запись отправлена: {item_id}")
@@ -461,5 +471,32 @@ def process_items_cron():
     except Exception as e:
         logger.error(f"❌ Ошибка в process_items_cron: {e}")
         save_last_processed_time()
+    finally:
+        db.close()
+def cleanup_old_messages():
+    try:
+        logger.info("🧹 Запуск ежедневной очистки старых сообщений")
+        db = SessionLocal()
+        tz_msk = timezone(timedelta(hours=3))
+        now = datetime.now(tz=tz_msk)
+
+        messages = db.query(SendedMessage).all()
+        deleted_count = 0
+
+        for msg in messages:
+            try:
+                scheduled_at_str = msg.scheduled_at
+                scheduled_at = datetime.fromisoformat(scheduled_at_str)
+                if scheduled_at.tzinfo is None:
+                    scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+                if scheduled_at < now:
+                    db.delete(msg)
+                    deleted_count += 1
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при парсинге даты у сообщения {msg.id}: {e}")
+        db.commit()
+        logger.info(f"🗑 Удалено {deleted_count} устаревших сообщений")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при очистке старых сообщений: {e}")
     finally:
         db.close()

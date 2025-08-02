@@ -344,19 +344,6 @@ async def process_greenapi_webhook(request):
                 logger.info("Создан новый разговор: %s", new_conv)
                 conversation_id = new_conv.get("id")
                 if conversation_id:
-                    # 1. Синхронизируем историю из GreenAPI в Chatwoot
-                    greenapi_history = get_greenapi_chat_history(sender_chat_id, count=50)
-                    print(greenapi_history)
-                    for msg in reversed(greenapi_history):
-                        content = msg.get("textMessage", "")
-                        if not content:
-                            continue
-                        msg_type = "incoming" if msg.get("type") == "incoming" else "outgoing"
-                        await client.post(
-                            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                            json={"content": content, "message_type": msg_type},
-                            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-                        )
                     # 2. Добавляем текущее входящее сообщение пользователя
                     msg_resp = await client.post(
                         f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
@@ -393,9 +380,6 @@ async def process_greenapi_webhook(request):
                         )
                         logger.info(f"Оповещение операторов: {notify_text}")
                         await unassign_conversation(phone)
-                        # Отправить сообщение в GreenAPI
-                        if notify_text:
-                            send_greenapi_message(f"{phone}@c.us", notify_text)
                     else:
                         if ai_reply:
                             print("Ai reply:",ai_reply)
