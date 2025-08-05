@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String,DateTime
 from db import Base
 
 class SendedMessage(Base):
@@ -9,6 +9,6 @@ class SendedMessage(Base):
     type = Column(String)
     phone_number =  Column(String) 
     phone_center =  Column(String) 
-    scheduled_at = Column(String)              
+    scheduled_at = Column(DateTime(timezone=True))      
     
     
