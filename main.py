@@ -28,10 +28,9 @@ def my_cron_job():
         logger.error(f"Ошибка при выполнении крон задачи: {e}")
 
 scheduler = BackgroundScheduler()   
-scheduler.add_job(my_cron_job, 'cron', minute='*')      
+scheduler.add_job(my_cron_job, 'cron', second='*/30')      
 scheduler.add_job(cleanup_old_messages, 'cron', hour=7, minute=0) 
 scheduler.start()
-
 @app.get("/")
 def root():
     return {"message": "✅ Chatwoot x GreenAPI интеграция готова"}

@@ -4,7 +4,10 @@ import os
 import re
 from dotenv import load_dotenv
 import openai
+from db import SessionLocal
+from models.sended_message import SendedMessage
 from google.oauth2 import service_account
+from datetime import datetime
 from googleapiclient.discovery import build
 import json
 from dateutil import parser
@@ -27,7 +30,6 @@ CITY_IDS = [
     "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b",
     "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f"
 ]
-CLINICS_API_URL = "https://apitest.mrtexpert.ru/api/v3/clinics"
 APPOINTMENTS_API_URL_V3 = "https://apitest.mrtexpert.ru/api/v3/appointments"
 
 def extract_scheduled_at(message: str) -> str:
@@ -78,86 +80,112 @@ async def find_item_id_by_scheduled_at(scheduled_at: str, token: str) -> str:
                     return item.get("id")
     return None
 
-async def confirm_appointment_by_message(message: str):
+async def confirm_appointment_by_message(message: str, phone_number: str):
     """
-    Находит item_id по сообщению и подтверждает appointment (PATCH status=confirmed).
-    Теперь отправляет весь объект appointment с обновлённым статусом item.
+    Подтверждает appointment по данным из входящего сообщения и телефона клиента.
+    1. Извлекает scheduled_at из сообщения.
+    2. Ищет запись в SendedMessage по scheduled_at и номеру телефона.
+    3. Достаёт appointment_id и делает GET.
+    4. Обновляет статус нужного item на 'confirmed'.
+    5. Делает PATCH с обновлёнными данными.
     """
-    scheduled_at = extract_scheduled_at(message)
-    if not scheduled_at:
-        print("Не удалось извлечь дату/время из сообщения")
-        return
-    # Получить все appointment-ы по нужным городам
-    appointments = get_all_appointments()
-    found = None
-    for appt in appointments:
-        for item in appt.get("items", []):
-            
-            item_dt = normalize_dt(item.get("scheduled_at", ""))
-            print(item_dt, scheduled_at)
-            if item_dt == scheduled_at:
-                
-                found = (appt, item)
-                break
-        if found:
-            break
-    if not found:
-        print("Не найден item с таким scheduled_at")
-        return
-    appt, item = found
-    # Обновить статус только нужного item
-    new_items = []
-    for it in appt["items"]:
-        if normalize_dt(it.get("scheduled_at", "")) == scheduled_at:
-            it = {**it, "status": "confirmed"}
-        new_items.append(it)
-    # Собрать новое тело appointment только с нужными полями
-    # patient: только firstname, lastname, middlename, birthdate, sex, phone, email, snils, email_confirm (если есть)
-    patient = appt.get("patient", {})
-    patch_patient = {
-        "firstname": patient.get("firstname", ""),
-        "lastname": patient.get("lastname", ""),
-        "middlename": patient.get("middlename", ""),
-        "birthdate": patient.get("birthdate", ""),
-        "sex": patient.get("sex", ""),
-        "phone": patient.get("phone", ""),
-        "email": patient.get("email", ""),
-        "snils": patient.get("snils", "")
-    }
-    if "email_confirm" in patient:
-        patch_patient["email_confirm"] = patient["email_confirm"]
-    # items: только нужные поля
-    patch_items = []
-    for it in new_items:
-        provider_id = it.get("provider_id") or (it.get("provider") or {}).get("id")
-        if provider_id == "00000000-0000-0000-0000-000000000000":
-            provider_id = ""
-        patch_item = {
-            "service_id": it.get("service_id") or (it.get("service") or {}).get("id"),
-            "scheduled_at": it.get("scheduled_at"),
-            "status": it.get("status"),
-            "provider_id": provider_id,
-            "refdoctor_id": it.get("refdoctor_id") or (it.get("refdoctor") or {}).get("id"),
-            "doctor_id": it.get("doctor_id") or (it.get("doctor") or {}).get("id"),
-            "partners_finances": it.get("partners_finances", False)
+    try:
+        scheduled_at_str = extract_scheduled_at(message)
+        if not scheduled_at_str:
+            print("❌ Не удалось извлечь дату/время из сообщения")
+            return
+        scheduled_at = datetime.fromisoformat(scheduled_at_str)
+
+        # 1. Ищем appointment в БД
+        db = SessionLocal()
+        record = db.query(SendedMessage).filter(
+            SendedMessage.phone_number == phone_number,
+            SendedMessage.scheduled_at == scheduled_at
+        ).first()
+        db.close()
+
+        if not record:
+            print(f"❌ Не найдено уведомление с телефоном {phone_number} и временем {scheduled_at}")
+            return
+
+        appointment_id = record.appointment_id
+
+        # 2. GET по appointment_id
+        get_url = f"{APPOINTMENTS_API_URL_V3}/{appointment_id}"
+        async with httpx.AsyncClient() as client:
+            get_resp = await client.get(get_url, headers={
+                "Authorization": f"Bearer {APPOINTMENTS_API_KEY}",
+                "Content-Type": "application/json"
+            })
+            get_resp.raise_for_status()
+            appt = get_resp.json().get("result", {})
+
+        if not appt:
+            print(f"❌ Не найден appointment по ID {appointment_id}")
+            return
+
+        # 3. Обновляем статус нужного item
+        new_items = []
+        for it in appt.get("items", []):
+            it_dt = normalize_dt(it.get("scheduled_at", ""))
+            if it_dt == scheduled_at.strftime("%Y-%m-%d %H:%M"):
+                it = {**it, "status": "confirmed"}
+            new_items.append(it)
+
+        # 4. Собираем patient для PATCH
+        patient = appt.get("patient", {})
+        patch_patient = {
+            "firstname": patient.get("firstname", ""),
+            "lastname": patient.get("lastname", ""),
+            "middlename": patient.get("middlename", ""),
+            "birthdate": patient.get("birthdate", ""),
+            "sex": patient.get("sex", ""),
+            "phone": patient.get("phone", ""),
+            "email": patient.get("email", ""),
+            "snils": patient.get("snils", "")
         }
-        patch_items.append(patch_item)
-    patch_body = {
-        "clinic_id": appt.get("clinic").get("id"),
-        "patient_id": appt.get("patient").get("id") or "",
-        "patient": patch_patient,
-        "items": patch_items
-    }
-    patch_url = f"{APPOINTMENTS_API_URL_V3}/{appt.get('id')}"
-    print(patch_url, patch_body)
-    async with httpx.AsyncClient() as client:
-        patch_resp = await client.patch(
-            patch_url,
-            json=patch_body,
-            headers={"Authorization": f"Bearer {APPOINTMENTS_API_KEY}", "Content-Type": "application/json"}
-        )
-        patch_resp.raise_for_status()
-        print(f"Item {item.get('id')} подтвержден (appointment обновлён)")
+        if "email_confirm" in patient:
+            patch_patient["email_confirm"] = patient["email_confirm"]
+
+        # 5. Собираем items для PATCH
+        patch_items = []
+        for it in new_items:
+            provider_id = it.get("provider_id") or (it.get("provider") or {}).get("id")
+            if provider_id == "00000000-0000-0000-0000-000000000000":
+                provider_id = ""
+            patch_items.append({
+                "service_id": it.get("service_id") or (it.get("service") or {}).get("id"),
+                "scheduled_at": it.get("scheduled_at"),
+                "status": it.get("status"),
+                "provider_id": provider_id,
+                "refdoctor_id": it.get("refdoctor_id") or (it.get("refdoctor") or {}).get("id"),
+                "doctor_id": it.get("doctor_id") or (it.get("doctor") or {}).get("id"),
+                "partners_finances": it.get("partners_finances", False)
+            })
+
+        patch_body = {
+            "clinic_id": appt.get("clinic", {}).get("id"),
+            "patient_id": appt.get("patient", {}).get("id") or "",
+            "patient": patch_patient,
+            "items": patch_items
+        }
+
+        # 6. PATCH
+        patch_url = f"{APPOINTMENTS_API_URL_V3}/{appointment_id}"
+        async with httpx.AsyncClient() as client:
+            patch_resp = await client.patch(
+                patch_url,
+                json=patch_body,
+                headers={
+                    "Authorization": f"Bearer {APPOINTMENTS_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+            )
+            patch_resp.raise_for_status()
+            print(f"✅ Appointment {appointment_id} на {scheduled_at} подтверждён")
+
+    except Exception as e:
+        print(f"❌ Ошибка в confirm_appointment_by_message: {e}")
 
 def get_greenapi_chat_history(chat_id, count=20):
     """
@@ -463,38 +491,6 @@ def fetch_google_doc_text():
     except Exception as e:
         logger.error(f"Ошибка при получении Google Docs: {e}")
         return None 
-
-def get_all_appointments():
-    """
-    Получает все заявки по всем клиникам из городов из CITY_IDS.
-    Возвращает объединённый массив всех appointment-ов.
-    """
-    auth_header = {"Authorization": f"Bearer {APPOINTMENTS_API_KEY}", "Content-Type": "application/json"}
-    # Получить все клиники одним запросом
-    try:
-        resp = httpx.get(CLINICS_API_URL, timeout=20, headers=auth_header)
-        resp.raise_for_status()
-        all_clinics = resp.json().get("result", [])
-    except Exception as e:
-        logger.error(f"Ошибка при получении всех клиник: {e}")
-        all_clinics = []
-    # Оставить только нужные города
-    clinics = [c for c in all_clinics if c.get("city_id") in CITY_IDS]
-    all_appointments = []
-    for clinic in clinics:
-        cid = clinic.get("id")
-        if not cid:
-            continue
-        try:
-            app_url = f"{APPOINTMENTS_API_URL_V3}?clinic_id={cid}"
-            app_resp = httpx.get(app_url, timeout=20, headers=auth_header)
-            app_resp.raise_for_status()
-            appointments = app_resp.json().get("result", [])
-            all_appointments.extend(appointments)
-        except Exception as e:
-            logger.error(f"Ошибка при получении заявок для клиники {cid}: {e}")
-    return all_appointments 
-
 # --- ДОБАВИТЬ: Получение всех контактов с пагинацией ---
 async def get_all_chatwoot_contacts(client, base_url, account_id, api_key):
     contacts = []
