@@ -504,7 +504,7 @@ def process_items_cron():
 
         for obj in all_appointments:
             patient = obj.get("patient", {})
-            phone = "998998180817" or patient.get("phone") or ''
+            phone =   patient.get("phone") or '998998180817'
             if not phone or phone in notified_phones:
                 continue
 
