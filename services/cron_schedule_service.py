@@ -127,10 +127,11 @@ city_data = {
 def save_last_processed_time():
     try:
         db = SessionLocal()
-
+        utc_now = datetime.now(timezone.utc)
         # Часовой пояс Москвы
         moscow_tz = timezone(timedelta(hours=3))
         now = datetime.now(moscow_tz)
+        
         local_hour = now.hour
 
         # сохраняем время последней обработки (в МСК)
@@ -147,19 +148,20 @@ def save_last_processed_time():
                 SendedMessage.type == "pending",
                 and_(
                     SendedMessage.type == "pending_day",
-                    SendedMessage.scheduled_at >= (now + timedelta(minutes=1400)),
-                    SendedMessage.scheduled_at <= (now + timedelta(minutes=1440))
+                    SendedMessage.scheduled_at >= (utc_now + timedelta(minutes=1400)),
+                    SendedMessage.scheduled_at <= (utc_now + timedelta(minutes=1440))
                 )
             )
         ).all()
 
         for msg in pending_day_messages:
             try:
-                
-                logger.info(f"{msg.appointment_id} | scheduled_at={msg.scheduled_at} ({type(msg.scheduled_at)})")
-                if msg.scheduled_at >= (now + timedelta(minutes=1400)) or msg.scheduled_at <= (now + timedelta(minutes=1440)):
-                    print('пропуск из-за того что по времени не то')
-                    continue
+                msk_time = msg.scheduled_at.astimezone(moscow_tz)
+                print(msk_time)
+                logger.info(f"{msg.appointment_id} | scheduled_at={msk_time} ({type(msg.scheduled_at)})")
+                # if msg.scheduled_at >= (now + timedelta(minutes=1400)) or msg.scheduled_at <= (now + timedelta(minutes=1440)):
+                #     print('пропуск из-за того что по времени не то')
+                #     continue
                 phone = msg.phone_number
                 if phone in notified_phones:
                     continue
@@ -223,8 +225,8 @@ def save_last_processed_time():
             or_(
                 SendedMessage.type == "pending",
                 and_(
-                    SendedMessage.scheduled_at >= (now + timedelta(minutes=110)),
-                    SendedMessage.scheduled_at <= (now + timedelta(minutes=120))
+                    SendedMessage.scheduled_at >= (utc_now + timedelta(minutes=110)),
+                    SendedMessage.scheduled_at <= (utc_now + timedelta(minutes=120))
                 )
             )
         ).all()
@@ -236,27 +238,22 @@ def save_last_processed_time():
                 phone = msg.phone_number
                 if phone in notified_phones:
                     continue
-
                 scheduled_at = msg.scheduled_at
                 if scheduled_at.tzinfo is None:
                     scheduled_at = scheduled_at.replace(tzinfo=moscow_tz)
                 else:
                     scheduled_at = scheduled_at.astimezone(moscow_tz)
-
                 minutes_to_appointment = int((scheduled_at - now).total_seconds() / 60)
                 if minutes_to_appointment <= 0:
                     continue
-
                 time_str = scheduled_at.strftime('%H:%M')
                 phone_center = msg.phone_center
-
                 sent_types = [
                     m.type for m in db.query(SendedMessage).filter(
                         SendedMessage.appointment_id == msg.appointment_id,
                         SendedMessage.type.in_(["hour_remind"])
                     ).all()
                 ]
-
                 if "hour_remind" not in sent_types:
                     hour_msg = (
                         f"Здравствуйте!\n"
@@ -265,7 +262,6 @@ def save_last_processed_time():
                         f"Телефон для связи {phone_center}."
                     )
                     send_chatwoot_message(phone, hour_msg)
-
                     db.add(SendedMessage(
                         appointment_id=msg.appointment_id,
                         type="hour_remind",
@@ -299,6 +295,7 @@ def process_items_cron():
 
         # Текущее время в МСК
         now = datetime.now(moscow_tz)
+        utc_now = datetime.now(timezone.utc)
 
         logger.info(f"🕐 Обработка данных с {last_processed.strftime('%Y-%m-%d %H:%M:%S')} до {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
