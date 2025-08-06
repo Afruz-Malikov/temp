@@ -124,19 +124,24 @@ city_data = {
         "phone": "84953080411"
     }
 }
-
 def save_last_processed_time():
     try:
         db = SessionLocal()
-        now = datetime.now(timezone.utc)
-        local_hour = now.astimezone(timezone(timedelta(hours=3))).hour
 
-        # сохраняем время последней обработки
+        # Часовой пояс Москвы
+        moscow_tz = timezone(timedelta(hours=3))
+        now = datetime.now(moscow_tz)
+        local_hour = now.hour
+
+        # сохраняем время последней обработки (в МСК)
         with open(LAST_PROCESSED_FILE, 'w') as f:
             json.dump({'last_processed': now.isoformat()}, f)
+
         processed_count = 0
         notified_phones = set()
+
         # --- pending_day ---
+        logger.debug(f"Проверка pending_day от {now + timedelta(minutes=1400)} до {now + timedelta(minutes=1440)}")
         pending_day_messages = db.query(SendedMessage).filter(
             or_(
                 SendedMessage.type == "pending",
@@ -150,13 +155,20 @@ def save_last_processed_time():
 
         for msg in pending_day_messages:
             try:
+                
+                logger.info(f"{msg.appointment_id} | scheduled_at={msg.scheduled_at} ({type(msg.scheduled_at)})")
+                if msg.scheduled_at >= (now + timedelta(minutes=1400)) or msg.scheduled_at <= (now + timedelta(minutes=1440)):
+                    print('пропуск из-за того что по времени не то')
+                    continue
                 phone = msg.phone_number
                 if phone in notified_phones:
                     continue
 
-                scheduled_at = msg.scheduled_at  # уже datetime
+                scheduled_at = msg.scheduled_at
                 if scheduled_at.tzinfo is None:
-                    scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+                    scheduled_at = scheduled_at.replace(tzinfo=moscow_tz)
+                else:
+                    scheduled_at = scheduled_at.astimezone(moscow_tz)
 
                 minutes_to_appointment = int((scheduled_at - now).total_seconds() / 60)
                 if minutes_to_appointment <= 0:
@@ -164,6 +176,7 @@ def save_last_processed_time():
 
                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
                 phone_center = msg.phone_center
+
                 sent_types = [
                     m.type for m in db.query(SendedMessage).filter(
                         SendedMessage.appointment_id == msg.appointment_id,
@@ -200,9 +213,12 @@ def save_last_processed_time():
                     logger.info(f"📆 Отправлено day_remind из pending_day: {msg.appointment_id}")
                     processed_count += 1
                     notified_phones.add(phone)
+
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке pending_day {msg.appointment_id}: {e}")
+
         # --- pending_hour ---
+        logger.debug(f"Проверка pending_hour от {now + timedelta(minutes=110)} до {now + timedelta(minutes=120)}")
         pending_hour_messages = db.query(SendedMessage).filter(
             or_(
                 SendedMessage.type == "pending",
@@ -219,9 +235,11 @@ def save_last_processed_time():
                 if phone in notified_phones:
                     continue
 
-                scheduled_at = msg.scheduled_at  # уже datetime
+                scheduled_at = msg.scheduled_at
                 if scheduled_at.tzinfo is None:
-                    scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+                    scheduled_at = scheduled_at.replace(tzinfo=moscow_tz)
+                else:
+                    scheduled_at = scheduled_at.astimezone(moscow_tz)
 
                 minutes_to_appointment = int((scheduled_at - now).total_seconds() / 60)
                 if minutes_to_appointment <= 0:
@@ -258,6 +276,7 @@ def save_last_processed_time():
                     logger.info(f"⏰ Отправлено hour_remind из pending: {msg.appointment_id}")
                     processed_count += 1
                     notified_phones.add(phone)
+
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке pending {msg.appointment_id}: {e}")
 
@@ -270,11 +289,20 @@ def save_last_processed_time():
 def process_items_cron():
     db = SessionLocal()
     try:
-        last_processed = get_last_processed_time()
-        now = datetime.now(timezone.utc)
+        # Часовой пояс Москвы (+03:00)
+        moscow_tz = timezone(timedelta(hours=3))
+
+        # Последний обработанный момент — тоже в МСК
+        last_processed = get_last_processed_time().astimezone(moscow_tz)
+
+        # Текущее время в МСК
+        now = datetime.now(moscow_tz)
+
         logger.info(f"🕐 Обработка данных с {last_processed.strftime('%Y-%m-%d %H:%M:%S')} до {now.strftime('%Y-%m-%d %H:%M:%S')}")
+
         auth_header = {"Authorization": f"Bearer {APPOINTMENTS_API_KEY}"}
-        skip_statuses = ['paid','done','canceled','started']
+        skip_statuses = ['paid', 'done', 'canceled', 'started']
+
         clinics = [{
             "id": "c389c091-be9c-11e5-9fce-a45d36c3a76c",
             "name": "Мытищи МРТ-Эксперт",
@@ -294,18 +322,20 @@ def process_items_cron():
             "longitude": "0",
             "latitude": "0"
         }]
+
         clinic_map = {c['id']: c for c in clinics}
         all_appointments = []
+
         for clinic in clinics:
             cid = clinic.get('id', '')
             if not cid:
                 continue
             try:
-                today_str = datetime.today().strftime('%Y-%m-%d')
+                today_str = now.strftime('%Y-%m-%d')
                 app_resp = httpx.get(
                     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
                     timeout=60,
-                    headers=auth_header 
+                    headers=auth_header
                 )
                 upd_resp = httpx.get(
                     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
@@ -314,34 +344,34 @@ def process_items_cron():
                 )
                 app_resp.raise_for_status()
                 upd_resp.raise_for_status()
+
                 created = app_resp.json().get("result", [])
                 updated = upd_resp.json().get("result", [])
-                # Строим map обновлённых по appointment_id  
+
                 updated_ids = {appt['id'] for appt in updated}
-                # Добавляем только те, которых нет в updated
-                merged_appointments = []
-                for appt in created:
-                    if appt["id"] not in updated_ids:
-                        merged_appointments.append(appt)
-                    
+                merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
+
                 all_appointments.extend(updated + merged_appointments)
+
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
-        
-        now = datetime.now(timezone.utc)
+
         processed_count = 0
         notified_phones = set()
+
         for obj in all_appointments:
             patient = obj.get("patient", {})
-            phone =   patient.get("phone") or '998998180817'
+            phone = "998998180817" or patient.get("phone") or ''
             if not phone or phone in notified_phones:
                 continue
+
             items = obj.get("items", [])
             if not items:
                 continue
-            # 1. Находим самую раннюю дату приёма среди всех услуг
+
             earliest_item = None
             earliest_time = None
+
             for item in items:
                 scheduled_at_str = item.get("scheduled_at")
                 if not scheduled_at_str:
@@ -349,30 +379,34 @@ def process_items_cron():
                 try:
                     dt = datetime.fromisoformat(scheduled_at_str)
                     if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
+                        dt = dt.replace(tzinfo=moscow_tz)
+                    else:
+                        dt = dt.astimezone(moscow_tz)
                 except Exception as e:
                     logger.warning(f"Неверный формат времени: {scheduled_at_str}, ошибка: {e}")
                     continue
                 if earliest_time is None or dt < earliest_time:
                     earliest_time = dt
                     earliest_item = item
+
             if not earliest_item or earliest_time < now:
                 continue
+
             item_id = earliest_item.get("id")
             item_status = earliest_item.get("status")
-            # 2. Проверка статусов
+
             appointment_in_db = db.query(SendedMessage).filter(
                 SendedMessage.appointment_id == item_id,
                 SendedMessage.type.in_(['pending', 'pending_new', 'pending_day'])
             ).first()
-            
+
             if item_status in skip_statuses:
                 if appointment_in_db:
                     db.delete(appointment_in_db)
                     db.commit()
                     logger.info(f"🗑 Удалено pending сообщение для {item_id} (статус: {item_status})")
                 continue
-          # 3. Если дата изменилась%
+
             if appointment_in_db and appointment_in_db.scheduled_at != earliest_time:
                 appointment_in_db.scheduled_at = earliest_time
                 db.commit()
@@ -387,18 +421,19 @@ def process_items_cron():
 
             delta = earliest_time - now
             dt_str = earliest_time.strftime('%d.%m.%Y в %H:%M')
+
             clinic = obj.get('clinic', {})
             full_clinic = clinic_map.get(clinic.get("id"), clinic)
             address = full_clinic.get("address", "—")
             directions = full_clinic.get("directions", "")
             phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "—"))
+
             if delta <= timedelta(minutes=29):
                 logger.info(f"⏳ Пропуск {item_id} — до приёма осталось меньше 30 минут")
                 continue
 
             sent_new = db.query(SendedMessage).filter_by(appointment_id=item_id, type="new_remind").first()
             if not sent_new:
-                # Отправляем новое сообщение
                 new_msg = (
                     f"Здравствуйте!\n"
                     f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
@@ -444,7 +479,6 @@ def process_items_cron():
                 processed_count += 1
                 continue
 
-            # Напоминание за день
             minutes_to_appointment = int(delta.total_seconds() / 60)
             if 1400 <= minutes_to_appointment <= 1440:
                 if 0 <= earliest_time.hour < 7:
@@ -464,6 +498,7 @@ def process_items_cron():
 
         save_last_processed_time()
         logger.info(f"✅ Завершено. Уведомлений отправлено: {processed_count}")
+
     except Exception as e:
         logger.error(f"❌ Ошибка в process_items_cron: {e}")
         save_last_processed_time()
