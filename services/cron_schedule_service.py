@@ -202,7 +202,6 @@ def save_last_processed_time():
                     notified_phones.add(phone)
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке pending_day {msg.appointment_id}: {e}")
-
         # --- pending_hour ---
         pending_hour_messages = db.query(SendedMessage).filter(
             or_(
@@ -276,7 +275,7 @@ def process_items_cron():
         logger.info(f"🕐 Обработка данных с {last_processed.strftime('%Y-%m-%d %H:%M:%S')} до {now.strftime('%Y-%m-%d %H:%M:%S')}")
         auth_header = {"Authorization": f"Bearer {APPOINTMENTS_API_KEY}"}
         skip_statuses = ['paid','done','canceled','started']
-        clinics = [   {
+        clinics = [{
             "id": "c389c091-be9c-11e5-9fce-a45d36c3a76c",
             "name": "Мытищи МРТ-Эксперт",
             "region": "Московская обл",
@@ -317,7 +316,7 @@ def process_items_cron():
                 upd_resp.raise_for_status()
                 created = app_resp.json().get("result", [])
                 updated = upd_resp.json().get("result", [])
-                # Строим map обновлённых по appointment_id
+                # Строим map обновлённых по appointment_id  
                 updated_ids = {appt['id'] for appt in updated}
                 # Добавляем только те, которых нет в updated
                 merged_appointments = []
@@ -334,14 +333,12 @@ def process_items_cron():
         notified_phones = set()
         for obj in all_appointments:
             patient = obj.get("patient", {})
-            phone = '998998180817' or patient.get("phone")
+            phone =   patient.get("phone") or '998998180817'
             if not phone or phone in notified_phones:
                 continue
-
             items = obj.get("items", [])
             if not items:
                 continue
-
             # 1. Находим самую раннюю дату приёма среди всех услуг
             earliest_item = None
             earliest_time = None
@@ -356,12 +353,11 @@ def process_items_cron():
                 except Exception as e:
                     logger.warning(f"Неверный формат времени: {scheduled_at_str}, ошибка: {e}")
                     continue
-
                 if earliest_time is None or dt < earliest_time:
                     earliest_time = dt
                     earliest_item = item
-            # if not earliest_item or earliest_time < now:
-            #     continue
+            if not earliest_item or earliest_time < now:
+                continue
             item_id = earliest_item.get("id")
             item_status = earliest_item.get("status")
             # 2. Проверка статусов
