@@ -9,7 +9,7 @@ DB_URL = (
     f"@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
 )
 
-engine = create_engine(DB_URL)
+engine = create_engine(DB_URL, connect_args={'options': '-c timezone=Europe/Moscow'})
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
  

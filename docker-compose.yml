@@ -21,6 +21,7 @@ services:
       POSTGRES_USER: hulk
       POSTGRES_PASSWORD: strongpassword123
       POSTGRES_DB: webhookdb
+      TZ: Europe/Moscow
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:

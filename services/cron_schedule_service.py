@@ -124,47 +124,196 @@ city_data = {
         "phone": "84953080411"
     }
 }
-def save_last_processed_time():
+# def save_last_processed_time():
+#     try:
+#         db = SessionLocal()
+#         utc_now = datetime.now(timezone.utc)
+#         # Часовой пояс Москвы
+#         moscow_tz = timezone(timedelta(hours=3))
+#         now = datetime.now(moscow_tz)
+        
+#         local_hour = now.hour
+
+#         # сохраняем время последней обработки (в МСК)
+#         with open(LAST_PROCESSED_FILE, 'w') as f:
+#             json.dump({'last_processed': now.isoformat()}, f)
+
+#         processed_count = 0
+#         notified_phones = set()
+
+#         # --- pending_day ---
+#         logger.debug(f"Проверка pending_day от {now + timedelta(minutes=1400)} до {now + timedelta(minutes=1440)}")
+#         pending_day_messages = db.query(SendedMessage).filter(
+#             or_(
+#                 SendedMessage.type == "pending",
+#                 and_(
+#                     SendedMessage.type == "pending_day",
+#                     SendedMessage.scheduled_at >= (utc_now + timedelta(minutes=1400)),
+#                     SendedMessage.scheduled_at <= (utc_now + timedelta(minutes=1440))
+#                 )
+#             )
+#         ).all()
+
+#         for msg in pending_day_messages:
+#             print("day",(utc_now + timedelta(minutes=1400)),(utc_now + timedelta(minutes=1440)),msg.scheduled_at)
+#             try:
+#                 msk_time = msg.scheduled_at.astimezone(moscow_tz)
+#                 print(msk_time)
+#                 logger.info(f"{msg.appointment_id} | scheduled_at={msk_time} ({type(msg.scheduled_at)})")
+#                 # if msg.scheduled_at >= (now + timedelta(minutes=1400)) or msg.scheduled_at <= (now + timedelta(minutes=1440)):
+#                 #     print('пропуск из-за того что по времени не то')
+#                 #     continue
+#                 phone = msg.phone_number
+#                 if phone in notified_phones:
+#                     continue
+
+#                 scheduled_at = msg.scheduled_at
+#                 if scheduled_at.tzinfo is None:
+#                     scheduled_at = scheduled_at.replace(tzinfo=moscow_tz)
+#                 else:
+#                     scheduled_at = scheduled_at.astimezone(moscow_tz)
+
+#                 minutes_to_appointment = int((scheduled_at - now).total_seconds() / 60)
+#                 print("оставшиеся время",minutes_to_appointment)
+#                 if minutes_to_appointment <= 0:
+#                     continue
+
+#                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
+#                 phone_center = msg.phone_center
+
+#                 sent_types = [
+#                     m.type for m in db.query(SendedMessage).filter(
+#                         SendedMessage.appointment_id == msg.appointment_id,
+#                         SendedMessage.type.in_(["day_remind", "hour_remind"])
+#                     ).all()
+#                 ]
+
+#                 if "day_remind" not in sent_types and local_hour > 7:
+#                     day_msg = (
+#                         f"Здравствуйте!\n"
+#                         f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
+#                         f"Подтвердите свой визит ответным сообщением (только цифра):\n"
+#                         f"1 – подтверждаю\n2 – прошу перенести\n3 – прошу отменить\n"
+#                         f"Телефон для связи {phone_center}"
+#                     )
+#                     send_chatwoot_message(phone, day_msg)
+
+#                     db.add(SendedMessage(
+#                         appointment_id=msg.appointment_id,
+#                         type="day_remind",
+#                         scheduled_at=scheduled_at,
+#                         phone_number=phone,
+#                         phone_center=phone_center
+#                     ))
+#                     # Проверка на существование pending
+#                     pending_exists = db.query(SendedMessage).filter_by(
+#                     appointment_id=msg.appointment_id,
+#                     type="pending"
+#                     ).first()
+
+#                     if not pending_exists:
+#                         db.add(SendedMessage(
+#                             appointment_id=msg.appointment_id,
+#                             type="pending",
+#                             scheduled_at=scheduled_at,
+#                             phone_number=msg.phone_number,
+#                             phone_center=msg.phone_center
+#                         ))
+
+#                     db.commit()
+
+#                     logger.info(f"📆 Отправлено day_remind из pending_day: {msg.appointment_id}")
+#                     processed_count += 1
+#                     notified_phones.add(phone)
+
+#             except Exception as e:
+#                 logger.warning(f"⚠️ Ошибка при обработке pending_day {msg.appointment_id}: {e}")
+
+#         # --- pending_hour ---
+#         logger.debug(f"Проверка pending_hour от {now + timedelta(minutes=110)} до {now + timedelta(minutes=120)}")
+#         pending_hour_messages = db.query(SendedMessage).filter(
+#             or_(
+#                 SendedMessage.type == "pending",
+#                 and_(
+#                     SendedMessage.scheduled_at >= (utc_now + timedelta(minutes=110)),
+#                     SendedMessage.scheduled_at <= (utc_now + timedelta(minutes=120))
+#                 )
+#             )
+#         ).all()
+
+#         for msg in pending_hour_messages:
+#             try:
+#                 print("hourlu",utc_now + timedelta(minutes=110),now + timedelta(minutes=120))
+#                 if msg.scheduled_at >= (now + timedelta(minutes=110)) and msg.scheduled_at <= (now + timedelta(minutes=120)):
+#                     continue
+#                 phone = msg.phone_number
+#                 if phone in notified_phones:
+#                     continue
+#                 scheduled_at = msg.scheduled_at
+#                 if scheduled_at.tzinfo is None:
+#                     scheduled_at = scheduled_at.replace(tzinfo=moscow_tz)
+#                 else:
+#                     scheduled_at = scheduled_at.astimezone(moscow_tz)
+#                 minutes_to_appointment = int((scheduled_at - now).total_seconds() / 60)
+#                 if minutes_to_appointment <= 0:
+#                     continue
+#                 time_str = scheduled_at.strftime('%H:%M')
+#                 phone_center = msg.phone_center
+#                 sent_types = [
+#                     m.type for m in db.query(SendedMessage).filter(
+#                         SendedMessage.appointment_id == msg.appointment_id,
+#                         SendedMessage.type.in_(["hour_remind"])
+#                     ).all()
+#                 ]
+#                 if "hour_remind" not in sent_types:
+#                     hour_msg = (
+#                         f"Здравствуйте!\n"
+#                         f"Напоминаем, что ваш приём в МРТ Эксперт сегодня в {time_str}.\n"
+#                         f"В центре нужно быть за 15 минут до начала приёма для оформления документов.\n"
+#                         f"Телефон для связи {phone_center}."
+#                     )
+#                     send_chatwoot_message(phone, hour_msg)
+#                     db.add(SendedMessage(
+#                         appointment_id=msg.appointment_id,
+#                         type="hour_remind",
+#                         scheduled_at=scheduled_at,
+#                         phone_number=phone,
+#                         phone_center=phone_center
+#                     ))
+#                     db.commit()
+
+#                     logger.info(f"⏰ Отправлено hour_remind из pending: {msg.appointment_id}")
+#                     processed_count += 1
+#                     notified_phones.add(phone)
+
+#             except Exception as e:
+#                 logger.warning(f"⚠️ Ошибка при обработке pending {msg.appointment_id}: {e}")
+
+#         logger.info(f"✅ Обработка отложенных уведомлений завершена. Отправлено: {processed_count}")
+
+#     except Exception as e:
+#         logger.error(f"❌ Ошибка в save_last_processed_time: {e}")
+#     finally:
+#         db.close()
+
+def save_last_processed_time(): 
     try:
         db = SessionLocal()
-        utc_now = datetime.now(timezone.utc)
-        # Часовой пояс Москвы
         moscow_tz = timezone(timedelta(hours=3))
-        now = datetime.now(moscow_tz)
-        
-        local_hour = now.hour
-
-        # сохраняем время последней обработки (в МСК)
+        now = datetime.now(timezone.utc)    
+        local_hour = now.astimezone(timezone(timedelta(hours=3))).hour 
         with open(LAST_PROCESSED_FILE, 'w') as f:
             json.dump({'last_processed': now.isoformat()}, f)
-
+            pending_messages = db.query(SendedMessage).filter(
+            SendedMessage.type.in_(["pending", "pending_day"])
+            ).all()
         processed_count = 0
         notified_phones = set()
-
-        # --- pending_day ---
-        logger.debug(f"Проверка pending_day от {now + timedelta(minutes=1400)} до {now + timedelta(minutes=1440)}")
-        pending_day_messages = db.query(SendedMessage).filter(
-            or_(
-                SendedMessage.type == "pending",
-                and_(
-                    SendedMessage.type == "pending_day",
-                    SendedMessage.scheduled_at >= (utc_now + timedelta(minutes=1400)),
-                    SendedMessage.scheduled_at <= (utc_now + timedelta(minutes=1440))
-                )
-            )
-        ).all()
-
-        for msg in pending_day_messages:
+        for msg in pending_messages:
             try:
-                msk_time = msg.scheduled_at.astimezone(moscow_tz)
-                print(msk_time)
-                logger.info(f"{msg.appointment_id} | scheduled_at={msk_time} ({type(msg.scheduled_at)})")
-                # if msg.scheduled_at >= (now + timedelta(minutes=1400)) or msg.scheduled_at <= (now + timedelta(minutes=1440)):
-                #     print('пропуск из-за того что по времени не то')
-                #     continue
                 phone = msg.phone_number
                 if phone in notified_phones:
-                    continue
+                    continue  
 
                 scheduled_at = msg.scheduled_at
                 if scheduled_at.tzinfo is None:
@@ -172,21 +321,24 @@ def save_last_processed_time():
                 else:
                     scheduled_at = scheduled_at.astimezone(moscow_tz)
 
-                minutes_to_appointment = int((scheduled_at - now).total_seconds() / 60)
+                delta = scheduled_at - now
+                minutes_to_appointment = int(delta.total_seconds() / 60)
                 if minutes_to_appointment <= 0:
-                    continue
+                    continue  
 
                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
+                time_str = scheduled_at.strftime('%H:%M')
                 phone_center = msg.phone_center
 
                 sent_types = [
                     m.type for m in db.query(SendedMessage).filter(
                         SendedMessage.appointment_id == msg.appointment_id,
-                        SendedMessage.type.in_(["day_remind", "hour_remind"])
+                        SendedMessage.type.in_(["new_remind", "day_remind", "hour_remind"])
                     ).all()
                 ]
 
-                if "day_remind" not in sent_types and local_hour > 7:
+                # === Обработка pending_day → day_remind ===
+                if msg.type == "pending_day" and 1400 <= minutes_to_appointment <= 1440 and "day_remind" not in sent_types and local_hour > 7:
                     day_msg = (
                         f"Здравствуйте!\n"
                         f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
@@ -203,65 +355,36 @@ def save_last_processed_time():
                         phone_number=phone,
                         phone_center=phone_center
                     ))
-                    db.add(SendedMessage(
+
+                    # Проверка на существующий pending
+                    pending_exists = db.query(SendedMessage).filter_by(
                         appointment_id=msg.appointment_id,
-                        type="pending",
-                        scheduled_at=scheduled_at,
-                        phone_number=msg.phone_number,
-                        phone_center=msg.phone_center
-                    ))
+                        type="pending"
+                    ).first()
+                    if not pending_exists:
+                        db.add(SendedMessage(
+                            appointment_id=msg.appointment_id,
+                            type="pending",
+                            scheduled_at=scheduled_at,
+                            phone_number=msg.phone_number,
+                            phone_center=msg.phone_center
+                        ))
+
                     db.commit()
-
-                    logger.info(f"📆 Отправлено day_remind из pending_day: {msg.appointment_id}")
+                    logger.info(f"📆 Утром отправлено day_remind из pending_day: {msg.appointment_id}")
                     processed_count += 1
-                    notified_phones.add(phone)
-
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при обработке pending_day {msg.appointment_id}: {e}")
-
-        # --- pending_hour ---
-        logger.debug(f"Проверка pending_hour от {now + timedelta(minutes=110)} до {now + timedelta(minutes=120)}")
-        pending_hour_messages = db.query(SendedMessage).filter(
-            or_(
-                SendedMessage.type == "pending",
-                and_(
-                    SendedMessage.scheduled_at >= (utc_now + timedelta(minutes=110)),
-                    SendedMessage.scheduled_at <= (utc_now + timedelta(minutes=120))
-                )
-            )
-        ).all()
-
-        for msg in pending_hour_messages:
-            try:
-                if msg.scheduled_at >= (now + timedelta(minutes=110)) and msg.scheduled_at <= (now + timedelta(minutes=120)):
                     continue
-                phone = msg.phone_number
-                if phone in notified_phones:
-                    continue
-                scheduled_at = msg.scheduled_at
-                if scheduled_at.tzinfo is None:
-                    scheduled_at = scheduled_at.replace(tzinfo=moscow_tz)
-                else:
-                    scheduled_at = scheduled_at.astimezone(moscow_tz)
-                minutes_to_appointment = int((scheduled_at - now).total_seconds() / 60)
-                if minutes_to_appointment <= 0:
-                    continue
-                time_str = scheduled_at.strftime('%H:%M')
-                phone_center = msg.phone_center
-                sent_types = [
-                    m.type for m in db.query(SendedMessage).filter(
-                        SendedMessage.appointment_id == msg.appointment_id,
-                        SendedMessage.type.in_(["hour_remind"])
-                    ).all()
-                ]
-                if "hour_remind" not in sent_types:
+
+                # === Обработка pending (обычные) → hour_remind ===
+                if msg.type == "pending" and 110 <= minutes_to_appointment <= 120 and "hour_remind" not in sent_types:
                     hour_msg = (
                         f"Здравствуйте!\n"
-                        f"Напоминаем, что ваш приём в МРТ Эксперт сегодня в {time_str}.\n"
-                        f"В центре нужно быть за 15 минут до начала приёма для оформления документов.\n"
+                        f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
+                        f"В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                         f"Телефон для связи {phone_center}."
                     )
                     send_chatwoot_message(phone, hour_msg)
+
                     db.add(SendedMessage(
                         appointment_id=msg.appointment_id,
                         type="hour_remind",
@@ -270,19 +393,40 @@ def save_last_processed_time():
                         phone_center=phone_center
                     ))
                     db.commit()
-
-                    logger.info(f"⏰ Отправлено hour_remind из pending: {msg.appointment_id}")
+                    logger.info(f"⏰ Утром отправлено hour_remind из pending: {msg.appointment_id}")
                     processed_count += 1
-                    notified_phones.add(phone)
+
+                # === Обработка pending → day_remind ===
+                if msg.type == "pending" and 1400 <= minutes_to_appointment <= 1440 and "day_remind" not in sent_types and local_hour > 7:
+                    day_msg = (
+                        f"Здравствуйте!\n"
+                        f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
+                        f"Подтвердите свой визит ответным сообщением (только цифра):\n"
+                        f"1 – подтверждаю\n2 – прошу перенести\n3 – прошу отменить\n"
+                        f"Телефон для связи: {phone_center}"
+                    )
+                    send_chatwoot_message(phone, day_msg)
+
+                    db.add(SendedMessage(
+                        appointment_id=msg.appointment_id,
+                        type="day_remind",
+                        scheduled_at=scheduled_at,
+                        phone_number=phone,
+                        phone_center=phone_center
+                    ))
+                    db.commit()
+                    logger.info(f"📆 Утром отправлено day_remind из pending: {msg.appointment_id}")
+                    processed_count += 1
+                    continue
 
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка при обработке pending {msg.appointment_id}: {e}")
+                logger.warning(f"⚠️ Ошибка при обработке pending сообщения {msg.appointment_id}: {e}")
 
         logger.info(f"✅ Обработка отложенных уведомлений завершена. Отправлено: {processed_count}")
 
     except Exception as e:
         logger.error(f"❌ Ошибка в save_last_processed_time: {e}")
-    finally:
+    finally: 
         db.close()
 def process_items_cron():
     db = SessionLocal()
@@ -377,6 +521,7 @@ def process_items_cron():
                     continue
                 try:
                     dt = datetime.fromisoformat(scheduled_at_str)
+                    print("first d",dt)
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=moscow_tz)
                     else:
@@ -384,10 +529,11 @@ def process_items_cron():
                 except Exception as e:
                     logger.warning(f"Неверный формат времени: {scheduled_at_str}, ошибка: {e}")
                     continue
+                print("changed d",dt)
                 if earliest_time is None or dt < earliest_time:
                     earliest_time = dt
                     earliest_item = item
-
+            print("earl",earliest_time)
             if not earliest_item or earliest_time < now:
                 continue
 
@@ -396,7 +542,7 @@ def process_items_cron():
 
             appointment_in_db = db.query(SendedMessage).filter(
                 SendedMessage.appointment_id == item_id,
-                SendedMessage.type.in_(['pending', 'pending_new', 'pending_day'])
+                SendedMessage.type.in_(['pending', 'pending_day'])
             ).first()
 
             if item_status in skip_statuses:
@@ -456,7 +602,7 @@ def process_items_cron():
                         logger.info(f"📄 Отправлено сообщение с подготовкой: {item_id}")
                 except Exception as e:
                     logger.warning(f"Ошибка получения подготовки: {e}")
-
+                print('hgs', earliest_time)
                 db.add(SendedMessage(
                     appointment_id=item_id,
                     type="new_remind",
@@ -477,7 +623,6 @@ def process_items_cron():
                 notified_phones.add(phone)
                 processed_count += 1
                 continue
-
             minutes_to_appointment = int(delta.total_seconds() / 60)
             if 1400 <= minutes_to_appointment <= 1440:
                 if 0 <= earliest_time.hour < 7:
