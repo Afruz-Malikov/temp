@@ -231,6 +231,8 @@ def save_last_processed_time():
 
         for msg in pending_hour_messages:
             try:
+                if msg.scheduled_at >= (now + timedelta(minutes=110)) and msg.scheduled_at <= (now + timedelta(minutes=120)):
+                    continue
                 phone = msg.phone_number
                 if phone in notified_phones:
                     continue
