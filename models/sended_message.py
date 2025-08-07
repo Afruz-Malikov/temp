@@ -1,14 +1,16 @@
-from sqlalchemy import Column, Integer, String,DateTime
+from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy.dialects.postgresql import JSONB 
 from db import Base
 
 class SendedMessage(Base):
     __tablename__ = "sended_messages"
 
     id = Column(Integer, primary_key=True, index=True)
+
+    # Идентификаторы
     appointment_id = Column(String, index=True)
-    type = Column(String)
-    phone_number =  Column(String) 
-    phone_center =  Column(String) 
-    scheduled_at = Column(DateTime(timezone=True))      
-    
-    
+    type = Column(String)   
+    appointment_json = Column(JSONB)
+    phone_number = Column(String)
+    scheduled_at = Column(DateTime(timezone=True))
+    phone_center = Column(String)

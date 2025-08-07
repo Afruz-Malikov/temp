@@ -7,7 +7,7 @@ import openai
 from db import SessionLocal
 from models.sended_message import SendedMessage
 from google.oauth2 import service_account
-from datetime import datetime
+from datetime import datetime ,timezone, timedelta
 from googleapiclient.discovery import build
 import json
 from dateutil import parser
@@ -82,57 +82,51 @@ async def find_item_id_by_scheduled_at(scheduled_at: str, token: str) -> str:
 
 async def confirm_appointment_by_message(message: str, phone_number: str):
     """
-    Подтверждает appointment по данным из входящего сообщения и телефона клиента.
-    1. Извлекает scheduled_at из сообщения.
-    2. Ищет запись в SendedMessage по scheduled_at и номеру телефона.
-    3. Достаёт appointment_id и делает GET.
-    4. Обновляет статус нужного item на 'confirmed'.
-    5. Делает PATCH с обновлёнными данными.
+    Подтверждает appointment по сообщению.
+    - Ищет запись в SendedMessage по телефону и времени (scheduled_at).
+    - Берёт appointment_json из записи.
+    - Подтверждает только item с нужным item_id.
+    - Делает PATCH.
+    - Добавляет новую запись с type="confirm"
     """
     try:
         scheduled_at_str = extract_scheduled_at(message)
         if not scheduled_at_str:
             print("❌ Не удалось извлечь дату/время из сообщения")
-            return
-        scheduled_at = datetime.fromisoformat(scheduled_at_str)
-
-        # 1. Ищем appointment в БД
+            return  
+        moscow_tz = timezone(timedelta(hours=3))
+        scheduled_at = datetime.fromisoformat(scheduled_at_str).replace(tzinfo=moscow_tz)
+        print(f"{scheduled_at} {type (scheduled_at)}")
         db = SessionLocal()
         record = db.query(SendedMessage).filter(
             SendedMessage.phone_number == phone_number,
             SendedMessage.scheduled_at == scheduled_at
         ).first()
-        db.close()
 
         if not record:
             print(f"❌ Не найдено уведомление с телефоном {phone_number} и временем {scheduled_at}")
             return
 
-        appointment_id = record.appointment_id
-
-        # 2. GET по appointment_id
-        get_url = f"{APPOINTMENTS_API_URL_V3}/{appointment_id}"
-        async with httpx.AsyncClient() as client:
-            get_resp = await client.get(get_url, headers={
-                "Authorization": f"Bearer {APPOINTMENTS_API_KEY}",
-                "Content-Type": "application/json"
-            })
-            get_resp.raise_for_status()
-            appt = get_resp.json().get("result", {})
+        item_id = record.appointment_id
+        appt = record.appointment_json or {}
 
         if not appt:
-            print(f"❌ Не найден appointment по ID {appointment_id}")
+            print("❌ В записи нет appointment_json")
             return
 
-        # 3. Обновляем статус нужного item
+        appointment_id = appt.get("id")
+        if not appointment_id:
+            print("❌ В appointment_json нет ID записи")
+            return
+
+        # Обновляем только нужный item по item_id
         new_items = []
         for it in appt.get("items", []):
-            it_dt = normalize_dt(it.get("scheduled_at", ""))
-            if it_dt == scheduled_at.strftime("%Y-%m-%d %H:%M"):
+            if (it.get("id") or it.get("service_id")) == item_id:
                 it = {**it, "status": "confirmed"}
             new_items.append(it)
 
-        # 4. Собираем patient для PATCH
+        # PATCH patient
         patient = appt.get("patient", {})
         patch_patient = {
             "firstname": patient.get("firstname", ""),
@@ -142,12 +136,11 @@ async def confirm_appointment_by_message(message: str, phone_number: str):
             "sex": patient.get("sex", ""),
             "phone": patient.get("phone", ""),
             "email": patient.get("email", ""),
-            "snils": patient.get("snils", "")
+            "snils": patient.get("snils", ""),
+            "email_confirm": patient.get("email_confirm", False)
         }
-        if "email_confirm" in patient:
-            patch_patient["email_confirm"] = patient["email_confirm"]
 
-        # 5. Собираем items для PATCH
+        # PATCH items
         patch_items = []
         for it in new_items:
             provider_id = it.get("provider_id") or (it.get("provider") or {}).get("id")
@@ -165,12 +158,12 @@ async def confirm_appointment_by_message(message: str, phone_number: str):
 
         patch_body = {
             "clinic_id": appt.get("clinic", {}).get("id"),
-            "patient_id": appt.get("patient", {}).get("id") or "",
+            "patient_id": patient.get("id", ""),
             "patient": patch_patient,
             "items": patch_items
         }
 
-        # 6. PATCH
+        # PATCH
         patch_url = f"{APPOINTMENTS_API_URL_V3}/{appointment_id}"
         async with httpx.AsyncClient() as client:
             patch_resp = await client.patch(
@@ -181,8 +174,21 @@ async def confirm_appointment_by_message(message: str, phone_number: str):
                     "Content-Type": "application/json"
                 }
             )
+            print(f"📨 PATCH ответ: {patch_resp.status_code} {patch_resp.text}")
             patch_resp.raise_for_status()
-            print(f"✅ Appointment {appointment_id} на {scheduled_at} подтверждён")
+
+        # Сохраняем подтверждение в БД
+        db.add(SendedMessage(
+            appointment_id=item_id,
+            type="confirm",
+            scheduled_at=scheduled_at,
+            phone_number=phone_number,
+            phone_center=record.phone_center,
+            appointment_json=appt
+        ))
+        db.commit()
+
+        print(f"✅ Appointment {appointment_id} подтверждён (item {item_id})")
 
     except Exception as e:
         print(f"❌ Ошибка в confirm_appointment_by_message: {e}")
@@ -334,13 +340,7 @@ async def process_greenapi_webhook(request):
                                 )
                                 ai_msg_resp.raise_for_status()
                                 logger.info("Благодарность отправлена в разговор %s", conversation_id)
-                                # 2. Подтвердить appointment через API
-                                from os import getenv
-                                token = getenv("APPOINTMENTS_API_KEY")
-                                if token:
-                                    await confirm_appointment_by_message(parsed.get("message", ""))
-                                else:
-                                    logger.warning("APPOINTMENTS_API_KEY не задан, не могу подтвердить appointment")
+                                await confirm_appointment_by_message(parsed.get("message", ""),phone)
                                 return  # Не отправлять ai_reply как обычный ответ
                         except Exception as e:
                             logger.warning(f"Ошибка при обработке подтверждения: {e}")
