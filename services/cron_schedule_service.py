@@ -533,7 +533,7 @@ def process_items_cron():
                 directions = full_clinic.get("directions", "")
                 phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "—"))
                 minutes_to_appointment = int(delta.total_seconds() / 60)
-                if minutes_to_appointment <= timedelta(minutes=30):
+                if minutes_to_appointment <= 30:
                     logger.info(f"⏩ Пропущено: осталось {int(delta.total_seconds() // 60)} мин до приёма в {earliest_time.strftime('%d.%m.%Y %H:%M')}")
                     continue
                 sent_new = db.query(SendedMessage).filter_by(appointment_id=item_id, type="new_remind").first()
