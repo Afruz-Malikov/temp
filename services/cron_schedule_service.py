@@ -532,7 +532,9 @@ def process_items_cron():
                 address = full_clinic.get("address", "—")
                 directions = full_clinic.get("directions", "")
                 phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "—"))
-                if delta <= timedelta(minutes=30):
+                minutes_to_appointment = int(delta.total_seconds() / 60)
+                if minutes_to_appointment <= timedelta(minutes=30):
+                    logger.info(f"⏩ Пропущено: осталось {int(delta.total_seconds() // 60)} мин до приёма в {earliest_time.strftime('%d.%m.%Y %H:%M')}")
                     continue
                 sent_new = db.query(SendedMessage).filter_by(appointment_id=item_id, type="new_remind").first()
                 if not sent_new:
@@ -584,7 +586,7 @@ def process_items_cron():
                     processed_count += 1
                     continue
 
-                minutes_to_appointment = int(delta.total_seconds() / 60)
+                
                 if 1400 <= minutes_to_appointment <= 1440 and 0 <= earliest_time.hour < 7:
                     logger.info(f"🌙 Ночь: откладываем сообщение (pending_day) для {item_id}")
                     is_created_type = db.query(SendedMessage).filter_by(
