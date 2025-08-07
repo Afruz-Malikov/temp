@@ -144,7 +144,6 @@ def save_last_processed_time():
                 phone = msg.phone_number
                 if phone in notified_phones:
                     continue  
-
                 scheduled_at = msg.scheduled_at
                 if scheduled_at.tzinfo is None:
                     scheduled_at = scheduled_at.replace(tzinfo=moscow_tz)
@@ -193,7 +192,7 @@ def save_last_processed_time():
 
                 # === Обработка pending (обычные) → hour_remind ===
                 if msg.type == "pending" and 110 <= minutes_to_appointment <= 120 and "hour_remind" not in sent_types:
-                    hour_msg = (
+                    hour_msg = (    
                         f"Здравствуйте!\n"
                         f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
                         f"В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
@@ -397,34 +396,27 @@ def process_items_cron():
             if not cid:
                 continue
             try:
-                # today_str = now.strftime('%Y-%m-%d')
-                # app_resp = httpx.get(
-                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
-                #     timeout=60,
-                #     headers=auth_header
-                # )
-                # upd_resp = httpx.get(
-                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
-                #     timeout=60,
-                #     headers=auth_header
-                # )
-                # app_resp.raise_for_status()
-                # upd_resp.raise_for_status()
-
-                # created = app_resp.json().get("result", [])
-                # updated = upd_resp.json().get("result", [])
-
-                # updated_ids = {appt['id'] for appt in updated}
-                # merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
-
-                # all_appointments.extend(updated + merged_appointments)
+                today_str = now.strftime('%Y-%m-%d')
                 app_resp = httpx.get(
-                    f"https://f487876b3fb3.ngrok-free.app/appointments",
+                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
                     timeout=60,
-                    headers={"ngrok-skip-browser-warning": 'scsd'}
+                    headers=auth_header
+                )
+                upd_resp = httpx.get(
+                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
+                    timeout=60,
+                    headers=auth_header
                 )
                 app_resp.raise_for_status()
-                all_appointments.extend(app_resp.json().get("result", []))
+                upd_resp.raise_for_status()
+
+                created = app_resp.json().get("result", [])
+                updated = upd_resp.json().get("result", [])
+
+                updated_ids = {appt['id'] for appt in updated}
+                merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
+
+                all_appointments.extend(updated + merged_appointments)
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
         grouped = defaultdict(lambda: defaultdict(list))
