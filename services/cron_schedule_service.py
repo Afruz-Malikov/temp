@@ -532,7 +532,8 @@ def process_items_cron():
                 address = full_clinic.get("address", "—")
                 directions = full_clinic.get("directions", "")
                 phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "—"))
-
+                if delta <= timedelta(minutes=30):
+                    continue
                 sent_new = db.query(SendedMessage).filter_by(appointment_id=item_id, type="new_remind").first()
                 if not sent_new:
                     logger.info(f"📨 Отправка напоминания {item_id} ({dt_str}) для {phone}")
