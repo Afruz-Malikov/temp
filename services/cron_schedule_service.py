@@ -415,8 +415,7 @@ def process_items_cron():
 
                 updated_ids = {appt['id'] for appt in updated}
                 merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
-
-                # all_appointments.extend(updated + merged_appointments)
+                all_appointments.extend(updated + merged_appointments)
                 # upd_resp = httpx.get(
                 #     f"https://ea3884206b0c.ngrok-free.app/appointments",
                 #     timeout=60,
