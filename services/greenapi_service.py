@@ -434,7 +434,7 @@ async def call_ai_service(messages) -> str:
     client = openai.AsyncOpenAI(api_key=OPEN_API_KEY)
     try:
         response = await client.chat.completions.create(
-            model="gpt-5-nano",
+            model="gpt-4-turbo",
             messages=messages,
             temperature=0.7,
             max_tokens=512
