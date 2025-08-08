@@ -445,6 +445,7 @@ def process_items_cron():
                 })
         processed_count = 0
         notified_phones = set()
+        services_prepare_messages = {}
         for phone, dates in grouped.items():
             if not phone:
                 logger.info("⛔ Пропуск: пустой номер телефона")
@@ -542,16 +543,33 @@ def process_items_cron():
                     send_chatwoot_message(phone, new_msg)
 
                     try:
-                        service_resp = httpx.get(
-                            f"https://apitest.mrtexpert.ru/api/v3/services/{item.get('service', {}).get('id', '')}?clinic_id={clinic.get('id')}",
-                            timeout=20,
-                            headers=auth_header
-                        )
-                        service_resp.raise_for_status()
-                        prepare_message = service_resp.json().get("result", {}).get("prepare", "")
-                        if prepare_message:
-                            send_chatwoot_message(phone, prepare_message)
-                            logger.info(f"📄 Отправлено сообщение с подготовкой: {item_id}")
+                        service_id = item.get('service', {}).get('id', '')
+                        if not service_id:
+                            continue  # или лог, если ID отсутствует
+
+                        if service_id not in services_prepare_messages:
+                            try:
+                                service_resp = httpx.get(
+                                    f"https://apitest.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
+                                    timeout=20,
+                                    headers=auth_header
+                                )
+                                service_resp.raise_for_status()
+                                prepare_message = service_resp.json().get("result", {}).get("prepare", "")
+                                # Сохраняем даже пустое значение, чтобы не запрашивать повторно
+                                services_prepare_messages[service_id] = prepare_message
+
+                                if prepare_message:
+                                    send_chatwoot_message(phone, prepare_message)
+                                    logger.info(f"📄 Отправлено сообщение с подготовкой: {item_id}")
+                            except Exception as e:
+                                logger.warning(f"Ошибка получения подготовки для service_id {service_id}: {e}")
+                        else:
+                            # Повторное использование сохранённого сообщения
+                            saved_prepare_message = services_prepare_messages[service_id]
+                            if saved_prepare_message:
+                                send_chatwoot_message(phone, saved_prepare_message)
+                                logger.info(f"📄 Отправлено сохраненное сообщение с подготовкой: {item_id}")
                     except Exception as e:
                         logger.warning(f"Ошибка получения подготовки: {e}")
 
@@ -577,8 +595,6 @@ def process_items_cron():
                     notified_phones.add(phone)
                     processed_count += 1
                     continue
-
-                
                 if 1400 <= minutes_to_appointment <= 1440 and 0 <= earliest_time.hour < 7:
                     logger.info(f"🌙 Ночь: откладываем сообщение (pending_day) для {item_id}")
                     is_created_type = db.query(SendedMessage).filter_by(
@@ -594,6 +610,7 @@ def process_items_cron():
                         ))
                         db.commit()
             logger.info(f"✅ Завершено. Уведомлений отправлено: {processed_count}")
+
     except Exception as e:
         logger.error(f"❌ Ошибка в process_items_cron: {e}")
     finally:
