@@ -283,31 +283,31 @@ def process_items_cron():
             if not cid:
                 continue
             try:
-                today_str = now.strftime('%Y-%m-%d')
-                app_resp = httpx.get(
-                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={'2025-08-09' or today_str}&created_to={'2025-08-09' or today_str}",
-                    timeout=60,
-                    headers=auth_header
-                )
-                upd_resp = httpx.get(
-                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={'2025-08-09' or today_str}&updated_to={'2025-08-09' or today_str}",
-                    timeout=60,
-                    headers=auth_header
-                )
-                app_resp.raise_for_status()
-                upd_resp.raise_for_status()
-                created = app_resp.json().get("result", [])
-                updated = upd_resp.json().get("result", [])
-
-                updated_ids = {appt['id'] for appt in updated}
-                merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
-                all_appointments.extend(updated + merged_appointments)
-                # app_resp = httpx.get('https://6dcda2520b13.ngrok-free.app/appointments',
+                # today_str = now.strftime('%Y-%m-%d')
+                # app_resp = httpx.get(
+                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={'2025-08-09' or today_str}&created_to={'2025-08-09' or today_str}",
                 #     timeout=60,
-                #     headers={"ngrok-skip-browser-warning": "gay"}
+                #     headers=auth_header
+                # )
+                # upd_resp = httpx.get(
+                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={'2025-08-09' or today_str}&updated_to={'2025-08-09' or today_str}",
+                #     timeout=60,
+                #     headers=auth_header
                 # )
                 # app_resp.raise_for_status()
-                # all_appointments.extend(app_resp.json().get("result", []))
+                # upd_resp.raise_for_status()
+                # created = app_resp.json().get("result", [])
+                # updated = upd_resp.json().get("result", [])
+
+                # updated_ids = {appt['id'] for appt in updated}
+                # merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
+                # all_appointments.extend(updated + merged_appointments)
+                app_resp = httpx.get('https://6dcda2520b13.ngrok-free.app/appointments',
+                    timeout=60,
+                    headers={"ngrok-skip-browser-warning": "gay"}
+                )
+                app_resp.raise_for_status()
+                all_appointments.extend(app_resp.json().get("result", []))
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
         grouped = defaultdict(lambda: defaultdict(list))
