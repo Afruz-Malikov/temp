@@ -285,12 +285,12 @@ def process_items_cron():
             try:
                 today_str = now.strftime('%Y-%m-%d')
                 app_resp = httpx.get(
-                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={'2025-08-09' or today_str}&created_to={'2025-08-09' or today_str}",
+                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
                     timeout=60,
                     headers=auth_header
                 )
                 upd_resp = httpx.get(
-                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={'2025-08-09' or today_str}&updated_to={'2025-08-09' or today_str}",
+                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
                     timeout=60,
                     headers=auth_header
                 )
