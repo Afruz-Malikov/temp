@@ -7,12 +7,9 @@ from db import SessionLocal
 from models.sended_message import SendedMessage
 from pathlib import Path
 from dotenv import load_dotenv
-from sqlalchemy import or_, and_
 from collections import defaultdict
-import pyperclip
 load_dotenv()
 logger = logging.getLogger("uvicorn.webhook")
-
 GREENAPI_ID = os.getenv("GREENAPI_ID")
 GREENAPI_TOKEN = os.getenv("GREENAPI_TOKEN")
 CHATWOOT_API_KEY = os.getenv("CHATWOOT_API_KEY")
@@ -191,7 +188,7 @@ def save_last_processed_time():
                     continue
 
                 # === Обработка pending (обычные) → hour_remind ===
-                if msg.type == "pending" and 110 <= minutes_to_appointment <= 120 and "hour_remind" not in sent_types:
+                if msg.type == "pending" and 90 <= minutes_to_appointment <= 120 and "hour_remind" not in sent_types:
                     hour_msg = (    
                         f"Здравствуйте!\n"
                         f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
@@ -233,7 +230,6 @@ def save_last_processed_time():
                     logger.info(f"📆 Утром отправлено day_remind из pending: {msg.appointment_id}")
                     processed_count += 1
                     continue
-
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке pending сообщения {msg.appointment_id}: {e}")
 
@@ -243,116 +239,7 @@ def save_last_processed_time():
         logger.error(f"❌ Ошибка в save_last_processed_time: {e}")
     finally: 
         db.close()
-# def process_items_cron():
-#     db = SessionLocal()
-#     try:
-#         moscow_tz = moscow_tz = timezone(timedelta(hours=3))
-#         now = datetime.now(moscow_tz)
-#         utc_now = datetime.now(timezone.utc)
-#         logger.info(f"\U0001F551 Обработка данных до {now.strftime('%Y-%m-%d %H:%M:%S')}")
-#         auth_header = {"Authorization": f"Bearer {APPOINTMENTS_API_KEY}"}
-#         skip_statuses = ['paid', 'done', 'canceled', 'started']
 
-#         clinic_id = "c389c091-be9c-11e5-9fce-a45d36c3a76c"
-#         today_str = now.strftime('%Y-%m-%d')
-
-#         try:
-#             app_resp = httpx.get(
-#                 f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={clinic_id}&created_from={'2025-08-06' or today_str}&created_to={'2025-08-06' or today_str}",
-#                 timeout=60,
-#                 headers=auth_header
-#             )
-#             upd_resp = httpx.get(
-#                 f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={clinic_id}&updated_from={'2025-08-06' or today_str}&updated_to={'2025-08-06' or today_str}",
-#                 timeout=60,
-#                 headers=auth_header
-#             )
-#             app_resp.raise_for_status()
-#             upd_resp.raise_for_status()
-#             created = app_resp.json().get("result", [])
-#             updated = upd_resp.json().get("result", [])
-#             updated_ids = {appt['id'] for appt in updated}
-#             appointments = updated + [appt for appt in created if appt["id"] not in updated_ids]
-#         except Exception as e:
-#             logger.error(f"Ошибка при получении заявок: {e}")
-#             appointments = []
-
-#         grouped = defaultdict(lambda: defaultdict(list))
-
-#         for appt in appointments:
-#             phone = appt.get("patient", {}).get("phone")
-#             clinic = appt.get("clinic", {})
-#             patient = appt.get("patient", {})
-#             for item in appt.get("items", []):
-#                 scheduled_at = item.get("scheduled_at")
-#                 if not phone or not scheduled_at:
-#                     continue
-#                 try:
-#                     dt = datetime.fromisoformat(scheduled_at).astimezone(moscow_tz)
-#                 except ValueError:
-#                     continue
-#                 date_key = dt.date().isoformat()
-#                 grouped['998998180817'][date_key].append({
-#                     "appointment_id": appt.get("id"),
-#                     "item": item,
-#                     "scheduled_at": scheduled_at,
-#                     "dt": dt,
-#                     "clinic": clinic,
-#                     "patient": patient
-#                 })
-
-#         processed = 0
-#         for phone, date_dict in grouped.items():
-#             for _, entries in date_dict.items():
-#                 entries.sort(key=lambda e: e["dt"])
-#                 earliest = entries[0]
-#                 # if earliest["item"].get("status") in skip_statuses:
-#                 #     continue
-#                 # if earliest["dt"] < now:
-#                 #     continue
-
-#                 dt_str = earliest["dt"].strftime('%d.%m.%Y в %H:%M')
-#                 address =  earliest["clinic"].get("address", "—")
-#                 directions = earliest["clinic"].get("directions", "")
-#                 phone_center = "84953080411" 
-#                 exists = db.query(SendedMessage).filter_by(
-#                     appointment_id=earliest["item"]["id"],
-#                     type="new_remind"
-#                 ).first()
-#                 if not exists:
-#                     new_msg = (
-#                         f"Здравствуйте!\n"
-#                         f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
-#                         f"Адрес: {address}, {directions}\n"
-#                         f"В центре нужно быть за 15 минут до приема.\n"
-#                         f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
-#                         f"Телефон для связи: {phone_center}"
-#                     )
-#                     send_chatwoot_message(phone, new_msg)
-#                     db.add(SendedMessage(
-#                         appointment_id=earliest["item"]["id"],
-#                         type="new_remind",
-#                         scheduled_at=earliest["dt"],
-#                         phone_number=phone,
-#                         phone_center=phone_center
-#                     ))
-#                     db.add(SendedMessage(
-#                         appointment_id=earliest["item"]["id"],
-#                         type="pending",
-#                         scheduled_at=earliest["dt"],
-#                         phone_number=phone,
-#                         phone_center=phone_center
-#                     ))
-#                     db.commit()
-#                     logger.info(f"📨 Отправлено новое напоминание: {phone} — {dt_str}")
-#                     processed += 1
-                
-#         save_last_processed_time()
-#         logger.info(f"✅ Завершено. Уведомлений отправлено: {processed}")
-#     except Exception as e:
-#         logger.error(f"❌ Ошибка в process_items_cron: {e}")
-#     finally:
-#         db.close()
 def process_items_cron():
     db = SessionLocal()
     try:
@@ -398,35 +285,33 @@ def process_items_cron():
             try:
                 today_str = now.strftime('%Y-%m-%d')
                 app_resp = httpx.get(
-                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
+                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={'2025-08-09' or today_str}&created_to={'2025-08-09' or today_str}",
                     timeout=60,
                     headers=auth_header
                 )
                 upd_resp = httpx.get(
-                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
+                    f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={'2025-08-09' or today_str}&updated_to={'2025-08-09' or today_str}",
                     timeout=60,
                     headers=auth_header
                 )
                 app_resp.raise_for_status()
                 upd_resp.raise_for_status()
-
                 created = app_resp.json().get("result", [])
                 updated = upd_resp.json().get("result", [])
 
                 updated_ids = {appt['id'] for appt in updated}
                 merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
                 all_appointments.extend(updated + merged_appointments)
-                # upd_resp = httpx.get(
-                #     f"https://ea3884206b0c.ngrok-free.app/appointments",
+                # app_resp = httpx.get('https://6dcda2520b13.ngrok-free.app/appointments',
                 #     timeout=60,
-                #     headers={"ngrok-skip-browser-warning": "hh"}
-                    
+                #     headers={"ngrok-skip-browser-warning": "gay"}
                 # )
-                # upd_resp.raise_for_status()
-                # all_appointments.extend(upd_resp.json().get("result", []))
+                # app_resp.raise_for_status()
+                # all_appointments.extend(app_resp.json().get("result", []))
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
         grouped = defaultdict(lambda: defaultdict(list))
+        grouped_full = defaultdict(lambda: defaultdict(list))
         for appt in all_appointments:
             phone = appt.get("patient", {}).get("phone")
             clinic = appt.get("clinic", {})
@@ -450,6 +335,7 @@ def process_items_cron():
                     "clinic": clinic,
                     "patient": patient
                 })
+                grouped_full[phone][date_key].append(appt)
         processed_count = 0
         notified_phones = set()
         services_prepare_messages = {}
@@ -493,11 +379,7 @@ def process_items_cron():
                 item = earliest_item_obj["item"]
                 print("sdcsds", item)
                 item_id = item.get("id")
-                common_appointment_obj = next(
-                (appt for appt in all_appointments if appt.get("id") == earliest_item_obj.get('appointment_id', "")),
-                {}
-                )
-
+                list_of_apt_in_one_day = grouped_full[phone][datetime.fromisoformat(scheduled_at).date().isoformat()]
                 item_status = item.get("status")
                 clinic = earliest_item_obj.get("clinic", {})
                 patient = earliest_item_obj.get("patient", {})
@@ -527,7 +409,7 @@ def process_items_cron():
                     logger.info(f"✏️ Обновлено pending сообщение для {item_id}: новое время {earliest_time.isoformat()}")
 
                 delta = earliest_time - now
-                dt_str = earliest_time.strftime('%d.%m.%Y в %H:%M')
+                dt_str = earliest_time.strftime('%d.%m.%Y %H:%M')
                 full_clinic = clinic_map.get(clinic.get("id"), clinic)
                 address = full_clinic.get("address", "—")
                 directions = full_clinic.get("directions", "")
@@ -540,12 +422,13 @@ def process_items_cron():
                 if not sent_new:
                     logger.info(f"📨 Отправка напоминания {item_id} ({dt_str}) для {phone}")
                     new_msg = (
-                        f"Здравствуйте!\n"
-                        f"Вы записаны в МРТ Эксперт на {dt_str}.\n"
-                        f"Адрес: {address}, {directions}\n"
-                        f"В центре нужно быть за 15 минут до приема.\n"
-                        f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
-                        f"Телефон для связи: {phone_center}"
+                            f"Здравствуйте!\n"
+                            f"Вы записаны в МРТ Эксперт на { 'несколько услуг, первый прием в' if len(list_of_apt_in_one_day) > 1 else ''} {dt_str}.\n"
+                            f"Адрес: {address}, {directions}\n"
+                            f"В центре нужно быть за 15 минут до приема.\n"
+                            f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
+                            f"Телефон для связи: {phone_center}\n"
+                            f"Если вы проходите процедуру МРТ впервые, рекомендуем посмотреть видео описание о том как проходит процедура по ссылке: https://vk.com/video-48669646_456239221?list=ec01502c735e906314"
                     )
                     send_chatwoot_message(phone, new_msg)
 
@@ -586,7 +469,7 @@ def process_items_cron():
                         scheduled_at=earliest_time,
                         phone_number=phone,
                         phone_center=phone_center,
-                        appointment_json=common_appointment_obj
+                        appointment_json=list_of_apt_in_one_day
                     ))
                     db.add(SendedMessage(
                         appointment_id=item_id,
@@ -594,7 +477,7 @@ def process_items_cron():
                         scheduled_at=earliest_time,
                         phone_number=phone,
                         phone_center=phone_center,
-                        appointment_json=common_appointment_obj
+                        appointment_json=list_of_apt_in_one_day
                     ))
                     db.commit()
 
@@ -623,7 +506,7 @@ def process_items_cron():
     finally:
         save_last_processed_time()
         db.close()
-def cleanup_old_messages():
+def cleanup_old_messages():     
     try:
         logger.info("🧹 Запуск ежедневной очистки старых сообщений")
         db = SessionLocal()

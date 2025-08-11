@@ -82,116 +82,103 @@ async def find_item_id_by_scheduled_at(scheduled_at: str, token: str) -> str:
 
 async def confirm_appointment_by_message(message: str, phone_number: str):
     """
-    Подтверждает appointment по сообщению.
-    - Ищет запись в SendedMessage по телефону и времени (scheduled_at).
-    - Берёт appointment_json из записи.
-    - Подтверждает только item с нужным item_id.
-    - Делает PATCH.
-    - Добавляет новую запись с type="confirm"
+    Подтверждает ВСЕ items во всех appointments, сохранённых в appointment_json (список).
+    Для каждого appointment формируется отдельный PATCH-запрос.
+    По каждому item создаётся запись type="confirm".
     """
+    db = None
     try:
         scheduled_at_str = extract_scheduled_at(message)
         if not scheduled_at_str:
             print("❌ Не удалось извлечь дату/время из сообщения")
-            return  
+            return
+
         moscow_tz = timezone(timedelta(hours=3))
         scheduled_at = datetime.fromisoformat(scheduled_at_str).replace(tzinfo=moscow_tz)
-        print(f"{scheduled_at} {type (scheduled_at)}")
+
         db = SessionLocal()
         record = db.query(SendedMessage).filter(
             SendedMessage.phone_number == phone_number,
             SendedMessage.scheduled_at == scheduled_at
         ).first()
-
         if not record:
             print(f"❌ Не найдено уведомление с телефоном {phone_number} и временем {scheduled_at}")
             return
 
-        item_id = record.appointment_id
-        appt = record.appointment_json or {}
-
-        if not appt:
-            print("❌ В записи нет appointment_json")
+        appts_list = record.appointment_json or []
+        if not isinstance(appts_list, list) or not appts_list:
+            print("❌ В записи нет валидного appointment_json (ожидался список)")
             return
+        async with httpx.AsyncClient(timeout=30) as client:
+            total_patched = 0
+            for appt in appts_list:
+                appointment_id = appt.get("id")
+                if not appointment_id:
+                    print("⚠️ Пропуск: у одного из объектов нет id")
+                    continue
 
-        appointment_id = appt.get("id")
-        if not appointment_id:
-            print("❌ В appointment_json нет ID записи")
-            return
-
-        # Обновляем только нужный item по item_id
-        new_items = []
-        for it in appt.get("items", []):
-            if (it.get("id") or it.get("service_id")) == item_id:
-                it = {**it, "status": "confirmed"}
-            new_items.append(it)
-
-        # PATCH patient
-        patient = appt.get("patient", {})
-        patch_patient = {
-            "firstname": patient.get("firstname", ""),
-            "lastname": patient.get("lastname", ""),
-            "middlename": patient.get("middlename", ""),
-            "birthdate": patient.get("birthdate", ""),
-            "sex": patient.get("sex", ""),
-            "phone": patient.get("phone", ""),
-            "email": patient.get("email", ""),
-            "snils": patient.get("snils", ""),
-            "email_confirm": patient.get("email_confirm", False)
-        }
-
-        # PATCH items
-        patch_items = []
-        for it in new_items:
-            provider_id = it.get("provider_id") or (it.get("provider") or {}).get("id")
-            if provider_id == "00000000-0000-0000-0000-000000000000":
-                provider_id = ""
-            patch_items.append({
-                "service_id": it.get("service_id") or (it.get("service") or {}).get("id"),
-                "scheduled_at": it.get("scheduled_at"),
-                "status": it.get("status"),
-                "provider_id": provider_id,
-                "refdoctor_id": it.get("refdoctor_id") or (it.get("refdoctor") or {}).get("id"),
-                "doctor_id": it.get("doctor_id") or (it.get("doctor") or {}).get("id"),
-                "partners_finances": it.get("partners_finances", False)
-            })
-
-        patch_body = {
-            "clinic_id": appt.get("clinic", {}).get("id"),
-            "patient_id": patient.get("id", ""),
-            "patient": patch_patient,
-            "items": patch_items
-        }
-
-        # PATCH
-        patch_url = f"{APPOINTMENTS_API_URL_V3}/{appointment_id}"
-        async with httpx.AsyncClient() as client:
-            patch_resp = await client.patch(
-                patch_url,
-                json=patch_body,
-                headers={
-                    "Authorization": f"Bearer {APPOINTMENTS_API_KEY}",
-                    "Content-Type": "application/json"
+                clinic_id = (appt.get("clinic") or {}).get("id")
+                patient = appt.get("patient", {}) or {}
+                patch_patient = {
+                    "firstname": patient.get("firstname", ""),
+                    "lastname":  patient.get("lastname",  ""),
+                    "middlename":patient.get("middlename",""),
+                    "birthdate": patient.get("birthdate",""),
+                    "sex":       patient.get("sex",""),
+                    "phone":     patient.get("phone",""),
+                    "email":     patient.get("email",""),
+                    "snils":     patient.get("snils",""),
+                    "email_confirm": patient.get("email_confirm", False)
                 }
-            )
-            print(f"📨 PATCH ответ: {patch_resp.status_code} {patch_resp.text}")
-            patch_resp.raise_for_status()
+                patch_items = []
+                items = appt.get("items", []) or []
+                if not items:
+                    print(f"⚠️ Пропуск PATCH {appointment_id}: нет items")
+                    continue
 
-        # Сохраняем подтверждение в БД
-        db.add(SendedMessage(
-            appointment_id=item_id,
-            type="confirm",
-            scheduled_at=scheduled_at,
-            phone_number=phone_number,
-            phone_center=record.phone_center,
-            appointment_json=appt
-        ))
-        db.commit()
+                for it in items:
+                    provider_id = it.get("provider_id") or (it.get("provider") or {}).get("id") or ""
+                    if provider_id == "00000000-0000-0000-0000-000000000000":
+                        provider_id = ""
 
-        print(f"✅ Appointment {appointment_id} подтверждён (item {item_id})")
+                    patch_items.append({
+                        "service_id": (it.get("service") or {}).get("id") or it.get("service_id") or "",
+                        "scheduled_at": it.get("scheduled_at"),
+                        "status": "confirmed",  
+                        "provider_id": provider_id,
+                        "refdoctor_id": (it.get("refdoctor") or {}).get("id") or it.get("refdoctor_id") or "",
+                        "doctor_id": (it.get("doctor") or {}).get("id") or it.get("doctor_id") or "",
+                        "partners_finances": it.get("partners_finances", False)
+                    })
+
+                patch_body = {
+                    "clinic_id": clinic_id,
+                    "patient_id": patient.get("id", ""),
+                    "patient": patch_patient,
+                    "items": patch_items
+                }
+
+                patch_url = f"{APPOINTMENTS_API_URL_V3}/{appointment_id}"
+                resp = await client.patch(
+                    patch_url,
+                    json=patch_body,
+                    headers={
+                        "Authorization": f"Bearer {APPOINTMENTS_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                )
+                print(f"📨 PATCH {appointment_id}: {resp.status_code} {resp.text} {patch_body}")
+                resp.raise_for_status()
+                total_patched += 1
+            print(f"✅ Подтверждены items во всех апойтментах: PATCHов отправлено {total_patched}")
 
     except Exception as e:
+        if db:
+            db.rollback()
         print(f"❌ Ошибка в confirm_appointment_by_message: {e}")
+    finally:
+        if db:
+            db.close()
 
 def get_greenapi_chat_history(chat_id, count=20):
     """
