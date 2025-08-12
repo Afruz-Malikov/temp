@@ -302,12 +302,6 @@ def process_items_cron():
                 updated_ids = {appt['id'] for appt in updated}
                 merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
                 all_appointments.extend(updated + merged_appointments)
-                # app_resp = httpx.get('https://6dcda2520b13.ngrok-free.app/appointments',
-                #     timeout=60,
-                #     headers={"ngrok-skip-browser-warning": "gay"}
-                # )
-                # app_resp.raise_for_status()
-                # all_appointments.extend(app_resp.json().get("result", []))
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
         grouped = defaultdict(lambda: defaultdict(list))

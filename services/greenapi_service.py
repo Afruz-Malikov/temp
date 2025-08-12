@@ -148,9 +148,9 @@ async def confirm_appointment_by_message(message: str, phone_number: str):
                         "provider_id": provider_id,
                         "refdoctor_id": (it.get("refdoctor") or {}).get("id") or it.get("refdoctor_id") or "",
                         "doctor_id": (it.get("doctor") or {}).get("id") or it.get("doctor_id") or "",
+                        "profession_id": (it.get("profession") or {}).get("id") or "",
                         "partners_finances": it.get("partners_finances", False)
                     })
-
                 patch_body = {
                     "clinic_id": clinic_id,
                     "patient_id": patient.get("id", ""),
