@@ -16,10 +16,8 @@ async def process_chatwoot_webhook(request):
     processed_messages = set()
     body = await request.json()
     logger.info("Получен вебхук от Chatwoot: %s", body)
-    
     if body.get("event") != "message_created":
         return {"status": "ignored"}
-    
     message = body.get("content")
     sender = body.get("sender", {})
     sender_type = sender.get("type")

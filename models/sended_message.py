@@ -6,7 +6,7 @@ class SendedMessage(Base):
     __tablename__ = "sended_messages"
 
     id = Column(Integer, primary_key=True, index=True)
-
+    send_after = Column(Boolean)
     # Идентификаторы
     appointment_id = Column(String, index=True)
     type = Column(String)   

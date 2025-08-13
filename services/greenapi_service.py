@@ -1,6 +1,8 @@
 import logging
 import httpx
-import os
+import os,asyncio
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 import re
 from dotenv import load_dotenv
 import openai
@@ -24,14 +26,41 @@ CHATWOOT_API_KEY = os.getenv("CHATWOOT_API_KEY")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
-APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY") or 'CNvy6w6CRR1QLY2V6eq6gDQT'
-
+APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID") or "1aO1sI0cGAZAvr96unecOoVEkJ9upNbO8NfFDe3psFOg"
+SHEET_NAME = os.getenv("SHEET_NAME", "Лист1")
+GOOGLE_SA_FILE = os.getenv("GOOGLE_SA_FILE") 
 CITY_IDS = [
     "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b",
     "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f"
 ]
 APPOINTMENTS_API_URL_V3 = "https://apitest.mrtexpert.ru/api/v3/appointments"
-
+_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+def _get_sheets_service():
+    if not GOOGLE_SA_FILE:
+        raise RuntimeError("GOOGLE_SA_FILE не задан")
+    creds = Credentials.from_service_account_file('credentials.json', scopes=_SCOPES)
+    print("Тип объекта:", type(creds))
+    print("Email сервисного аккаунта:", creds.service_account_email)
+    print("Scopes:", creds.scopes)
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+def _append_row_sync(date_str: str, phone: str, decision: str,clinic_name:str):
+    """Синхронная запись в Google Sheets (вызываем из отдельного потока)."""
+    service = _get_sheets_service()
+    body = {"values": [[clinic_name,date_str, phone, decision]]}
+    service.spreadsheets().values().append(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"{SHEET_NAME}!A:C",
+        valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
+        body=body
+    ).execute()
+async def append_to_google_sheet(date_str: str, phone: str, decision: str, clinic_name: str):
+    """Не блокируем event loop — пишем в шит в отдельном потоке."""
+    try:
+        await asyncio.to_thread(_append_row_sync, date_str, phone, decision,clinic_name)
+    except Exception as e:
+        print(f"⚠️ Не удалось записать в Google Sheets: {e} | {date_str=} {phone=} {decision=}")
 def extract_scheduled_at(message: str) -> str:
     """
     Извлекает дату и время appointment из текста уведомления.
@@ -80,14 +109,14 @@ async def find_item_id_by_scheduled_at(scheduled_at: str, token: str) -> str:
                     return item.get("id")
     return None
 
-async def confirm_appointment_by_message(message: str, phone_number: str):
+async def change_appointment_by_message(message: str, phone_number: str, status: str):
     """
     Подтверждает ВСЕ items во всех appointments, сохранённых в appointment_json (список).
     Для каждого appointment формируется отдельный PATCH-запрос.
     По каждому item создаётся запись type="confirm".
     """
     db = None
-    try:
+    try: 
         scheduled_at_str = extract_scheduled_at(message)
         if not scheduled_at_str:
             print("❌ Не удалось извлечь дату/время из сообщения")
@@ -104,7 +133,7 @@ async def confirm_appointment_by_message(message: str, phone_number: str):
         if not record:
             print(f"❌ Не найдено уведомление с телефоном {phone_number} и временем {scheduled_at}")
             return
-
+        
         appts_list = record.appointment_json or []
         if not isinstance(appts_list, list) or not appts_list:
             print("❌ В записи нет валидного appointment_json (ожидался список)")
@@ -116,8 +145,8 @@ async def confirm_appointment_by_message(message: str, phone_number: str):
                 if not appointment_id:
                     print("⚠️ Пропуск: у одного из объектов нет id")
                     continue
-
                 clinic_id = (appt.get("clinic") or {}).get("id")
+                await append_to_google_sheet(scheduled_at_str, phone_number, status, (appt.get("clinic") or {}).get('name', ''))
                 patient = appt.get("patient", {}) or {}
                 patch_patient = {
                     "firstname": patient.get("firstname", ""),
@@ -144,7 +173,7 @@ async def confirm_appointment_by_message(message: str, phone_number: str):
                     patch_items.append({
                         "service_id": (it.get("service") or {}).get("id") or it.get("service_id") or "",
                         "scheduled_at": it.get("scheduled_at"),
-                        "status": "confirmed",  
+                        "status": status,
                         "provider_id": provider_id,
                         "refdoctor_id": (it.get("refdoctor") or {}).get("id") or it.get("refdoctor_id") or "",
                         "doctor_id": (it.get("doctor") or {}).get("id") or it.get("doctor_id") or "",
@@ -180,7 +209,7 @@ async def confirm_appointment_by_message(message: str, phone_number: str):
         if db:
             db.close()
 
-def get_greenapi_chat_history(chat_id, count=20):
+def get_greenapi_chat_history(chat_id, count=18):
     """
     Получить историю сообщений из GreenAPI по chat_id
     """
@@ -189,54 +218,75 @@ def get_greenapi_chat_history(chat_id, count=20):
     try:
         resp = httpx.post(url, json=payload, timeout=10, headers={"Content-Type": "application/json"})
         resp.raise_for_status()
-        return resp.json()  # список сообщений
+        return resp.json()
     except Exception as e:
         logger.error(f"Ошибка при получении истории из GreenAPI: {e}")
         return []
 
 async def process_greenapi_webhook(request):
+    def _parse_ai_control(ai_reply: str):
+        """
+        Пытается распарсить управляющий JSON:
+        {"type": "confirm"|"cancel"|"operator_connect", "message": "..."}
+        Возвращает dict или None, если это обычный текст.
+        """
+        if not ai_reply:
+            return None
+        s = ai_reply.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return None
+        try:
+            data = json.loads(s)
+            if isinstance(data, dict) and "type" in data:
+                return data
+        except Exception:
+            return None
+        return None
+
     body = await request.json()
     logger.info("Получен вебхук: %s", body)
 
     if body.get("typeWebhook") != "incomingMessageReceived":
         logger.info("Пропущен вебхук не того типа")
         return {"status": "ignored"}
+
     message = ""
     msg_data = body.get("messageData", {})
     msg_type = msg_data.get("typeMessage")
 
     if msg_type == "textMessage":
-            message = msg_data.get("textMessageData", {}).get("textMessage", "")
+        message = msg_data.get("textMessageData", {}).get("textMessage", "")
     elif msg_type == "extendedTextMessage":
-            message = msg_data.get("extendedTextMessageData", {}).get("text", "")
+        message = msg_data.get("extendedTextMessageData", {}).get("text", "")
     elif msg_type == "quotedMessage":
-            message = msg_data.get("extendedTextMessageData", {}).get("text", "")
+        message = msg_data.get("extendedTextMessageData", {}).get("text", "")
 
     sender_chat_id = body.get("senderData", {}).get("chatId", "")
     sender_name = body.get("senderData", {}).get("senderName", "")
 
     if not message or not sender_chat_id:
-            logger.warning("Нет текста или sender_chat_id")
-            return {"status": "no content"}
+        logger.warning("Нет текста или sender_chat_id")
+        return {"status": "no content"}
+
     phone = sender_chat_id.replace("@c.us", "")
     formatted_phone = f"+{phone}"
 
     try:
         async with httpx.AsyncClient() as client:
-            # --- Используем новую функцию для получения всех контактов ---
+            # --- Контакт в Chatwoot ---
             contacts = await get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
-            contact = next((c for c in contacts if c["phone_number"] == formatted_phone), None)
+            contact = next((c for c in contacts if c.get("phone_number") == formatted_phone), None)
 
             if not contact:
-                print({"name": sender_name, "phone_number": formatted_phone})
+                logger.info({"name": sender_name, "phone_number": formatted_phone})
                 contact_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
                     json={"name": "afruz" or sender_name, "phone_number": formatted_phone},
-                    headers={"api_access_token": CHATWOOT_API_KEY,"Content-Type": "application/json" }
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
                 )
                 if contact_resp.status_code == 422 and "Phone number has already been taken" in contact_resp.text:
                     contacts = await get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
-                    contact = next((c for c in contacts if c["phone_number"] == formatted_phone), None)
+                    contact = next((c for c in contacts if c.get("phone_number") == formatted_phone), None)
                     if contact:
                         contact_id = contact["id"]
                     else:
@@ -255,6 +305,7 @@ async def process_greenapi_webhook(request):
             else:
                 contact_id = contact["id"]
 
+            # --- Поиск/создание разговора ---
             convs_resp = await client.get(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
@@ -264,83 +315,6 @@ async def process_greenapi_webhook(request):
 
             if conversations:
                 conversation_id = conversations[0]["id"]
-                # Назначить оператора 3 на conversation
-                await client.patch(
-                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
-                    json={"assignee_id": 3},
-                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-                )
-                msg_resp = await client.post(
-                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                    json={"content": message, "message_type": "incoming"},
-                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-                )
-                msg_resp.raise_for_status()
-                logger.info("Отправлено сообщение в существующий разговор %s: %s", conversation_id, msg_resp.text)
-                # --- AI обработка ---
-                greenapi_history = get_greenapi_chat_history(sender_chat_id)
-                system_prompt = fetch_google_doc_text() or "You are a helpful assistant."
-                gpt_messages = [{"role": "system", "content": system_prompt}]
-                for msg in reversed(greenapi_history):
-                    if msg.get("type") == "incoming":
-                        gpt_messages.append({"role": "user", "content": msg.get("textMessage", "")})
-                    elif msg.get("type") == "outgoing":
-                        gpt_messages.append({"role": "assistant", "content": msg.get("textMessage", "")})
-                if not any(m.get("content") == message for m in gpt_messages if m["role"] == "user"):
-                    gpt_messages.append({"role": "user", "content": message})
-                ai_reply = await call_ai_service(gpt_messages)
-                # ai_reply = {}
-                
-                operator_connect = False
-                operator_message = None
-                try:
-                    parsed = json.loads(ai_reply)
-                    print(parsed)
-                    if isinstance(parsed, dict) and parsed.get("type") == "operator_connect":
-                        operator_connect = True
-                        operator_message = parsed.get("message") or "Клиенту требуется оператор."
-                except Exception:
-                    pass
-                if operator_connect:
-                    # Отправить сообщение всем операторам (в чат)
-                    notify_text = f"{operator_message}"
-                    await client.post(
-                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                        json={"content": notify_text, "message_type": "outgoing"},
-                        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-                    )
-                    logger.info(f"Оповещение операторов: {notify_text}")
-                    await unassign_conversation(phone)
-                else:
-                    if ai_reply:
-                        print("Ai reply:", ai_reply)
-                        # --- Обработка подтверждения ---
-                        try:
-                            parsed = json.loads(ai_reply)
-                            if isinstance(parsed, dict) and parsed.get("type") == "confirm":
-                                # 1. Отправить благодарность в Chatwoot
-                                thank_you_msg = "Спасибо за потверждение записи.\nЖдем вас за 15 минут до приема"
-                                ai_msg_resp = await client.post(
-                                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                                    json={"content": thank_you_msg, "message_type": "outgoing"},
-                                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-                                )
-                                ai_msg_resp.raise_for_status()
-                                logger.info("Благодарность отправлена в разговор %s", conversation_id)
-                                await confirm_appointment_by_message(parsed.get("message", ""),phone)
-                                return  # Не отправлять ai_reply как обычный ответ
-                        except Exception as e:
-                            logger.warning(f"Ошибка при обработке подтверждения: {e}")
-                        # --- Обычный AI ответ ---
-                        # Только если не confirm
-                        if not (isinstance(ai_reply, str) and ai_reply.strip().startswith('{')):
-                            ai_msg_resp = await client.post(
-                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                                json={"content": ai_reply, "message_type": "outgoing"},
-                        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-                    )
-                    ai_msg_resp.raise_for_status()
-                    logger.info("AI ответ отправлен в разговор %s", conversation_id)
             else:
                 conv_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
@@ -358,58 +332,92 @@ async def process_greenapi_webhook(request):
                 new_conv = conv_resp.json()
                 logger.info("Создан новый разговор: %s", new_conv)
                 conversation_id = new_conv.get("id")
-                if conversation_id:
-                    # 2. Добавляем текущее входящее сообщение пользователя
-                    msg_resp = await client.post(
-                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                        json={"content": message, "message_type": "incoming"},
-                        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-                    )
-                    msg_resp.raise_for_status()
-                    logger.info("Сообщение добавлено в новый разговор %s", conversation_id)
-                    # --- AI обработка ---
-                    # Истории нет, только system prompt и текущее сообщение
-                    system_prompt = fetch_google_doc_text() or "Ты полезный ИИ ассистент помогающим пациентом МРТ клиники"
-                    gpt_messages = [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": message}
-                    ]
-                    ai_reply = await call_ai_service(gpt_messages)
-                    # --- Проверка на operator_connect ---
-                    operator_connect = False
-                    operator_message = None
-                    try:
-                        parsed = json.loads(ai_reply)
-                        if isinstance(parsed, dict) and parsed.get("type") == "operator_connect":
-                            operator_connect = True
-                            operator_message = parsed.get("message") or "Клиенту требуется оператор."
-                    except Exception:
-                        pass
-                    if operator_connect:
-                        # Отправить сообщение всем операторам (в чат)
-                        notify_text = f"{operator_message}"
-                        await client.post(
-                            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                            json={"content": notify_text, "message_type": "outgoing"},
-                            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-                        )
-                        logger.info(f"Оповещение операторов: {notify_text}")
-                        await unassign_conversation(phone)
-                    else:
-                        if ai_reply:
-                            print("Ai reply:",ai_reply)
-                            ai_msg_resp = await client.post(
-                                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                                json={"content": ai_reply, "message_type": "outgoing"},
-                                headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-                            )
-                        ai_msg_resp.raise_for_status()
-                        logger.info("AI ответ отправлен в разговор %s", conversation_id)
-                else:
+                if not conversation_id:
                     logger.warning("Не удалось получить ID созданного разговора.")
+                    return {"status": "error", "detail": "no conversation id"}
+
+            # Назначить оператора 3
+            await client.patch(
+                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
+                json={"assignee_id": 3},
+                headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+            )
+
+            # Добавить входящее сообщение пользователя
+            msg_resp = await client.post(
+                f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                json={"content": message, "message_type": "incoming"},
+                headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+            )
+            msg_resp.raise_for_status()
+            logger.info("Добавлено входящее сообщение в разговор %s", conversation_id)
+
+            # --- AI обработка ---
+            # История из GreenAPI для контекста
+            greenapi_history = get_greenapi_chat_history(sender_chat_id)
+            system_prompt = fetch_google_doc_text() or "You are a helpful assistant."
+            gpt_messages = [{"role": "system", "content": system_prompt}]
+            for msg in reversed(greenapi_history):
+                if msg.get("type") == "incoming":
+                    gpt_messages.append({"role": "user", "content": msg.get("textMessage", "")})
+                elif msg.get("type") == "outgoing":
+                    gpt_messages.append({"role": "assistant", "content": msg.get("textMessage", "")})
+            if not any(m.get("content") == message for m in gpt_messages if m["role"] == "user"):
+                gpt_messages.append({"role": "user", "content": message})
+
+            ai_reply = await call_ai_service(gpt_messages)
+            logger.debug(f"AI reply raw: {ai_reply!r}")
+
+            ctrl = _parse_ai_control(ai_reply)
+
+            # --- Управляющие команды от ИИ ---
+            if ctrl and ctrl.get("type") == "operator_connect":
+                operator_message = ctrl.get("message") or "Клиенту требуется оператор."
+                await client.post(
+                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                    json={"content": operator_message, "message_type": "outgoing"},
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+                )
+                logger.info("Оповещение операторов отправлено")
+                await unassign_conversation(phone)
+                return {"status": "ok"}
+
+            if ctrl and ctrl.get("type") == "confirm":
+                thank_you_msg = "Спасибо за подтверждение записи. Ждём вас за 15 минут до приёма."
+                ai_msg_resp = await client.post(
+                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                    json={"content": thank_you_msg, "message_type": "outgoing"},
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+                )
+                ai_msg_resp.raise_for_status()
+                await change_appointment_by_message(ctrl.get("message", ""), phone, "confirm")
+                return {"status": "ok"}
+
+            if ctrl and ctrl.get("type") == "cancel":
+                cancel_msg = "Вашу запись отменяем. Если потребуется новая запись, напишите нам или позвоните."
+                ai_msg_resp = await client.post(
+                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                    json={"content": cancel_msg, "message_type": "outgoing"},
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+                )
+                ai_msg_resp.raise_for_status()
+                await change_appointment_by_message(ctrl.get("message", ""), phone, "canceled")
+                return {"status": "ok"}
+
+            # --- Обычный текстовый ответ ИИ ---
+            if ai_reply and not ctrl:
+                ai_msg_resp = await client.post(
+                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
+                    json={"content": ai_reply, "message_type": "outgoing"},
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+                )
+                ai_msg_resp.raise_for_status()
+                logger.info("AI ответ отправлен в разговор %s", conversation_id)
+
     except Exception as e:
         logger.exception("Ошибка: %s", e)
         return {"status": "error", "detail": str(e)}
+
     return {"status": "ok"}
 
 async def call_ai_service(messages) -> str:
