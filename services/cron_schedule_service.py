@@ -111,7 +111,7 @@ def send_chatwoot_message(phone, message):
         logger.error(f"Ошибка отправки в Chatwoot: {e}")
 
 city_data = {
-    "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f": {
+    "19901c01-523d-11e5-bd0c-c8600054f881": {
         "address": "г. Липецк, пл. Петра Великого, дом 2",
         "site": "https://lip.mrtexpert.ru/clinics/1/map.svg",
         "phone": "84742505105"
@@ -307,7 +307,6 @@ def process_items_cron():
                 upd_resp.raise_for_status()
                 created = app_resp.json().get("result", [])
                 updated = upd_resp.json().get("result", [])
-
                 updated_ids = {appt['id'] for appt in updated}
                 merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
                 all_appointments.extend(updated + merged_appointments)
@@ -416,7 +415,7 @@ def process_items_cron():
                 full_clinic = clinic_map.get(clinic.get("id"), clinic)
                 address = full_clinic.get("address", "—")
                 directions = full_clinic.get("directions", "")
-                phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "—"))
+                phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "84742505105"))
                 minutes_to_appointment = int(delta.total_seconds() / 60)
                 if minutes_to_appointment <= 30:
                     logger.info(f"⏩ Пропущено: осталось {int(delta.total_seconds() // 60)} мин до приёма в {earliest_time.strftime('%d.%m.%Y %H:%M')}")
@@ -440,7 +439,6 @@ def process_items_cron():
                             f"Если вы проходите процедуру МРТ впервые, рекомендуем посмотреть видео описание о том как проходит процедура по ссылке: https://vk.com/video-48669646_456239221?list=ec01502c735e906314"
                     )
                     send_chatwoot_message(phone, new_msg)
-
                     try:
                         service_id = item.get('service', {}).get('id', '')
                         if not service_id:
@@ -455,9 +453,7 @@ def process_items_cron():
                                 )
                                 service_resp.raise_for_status()
                                 prepare_message = service_resp.json().get("result", {}).get("prepare", "")
-                                # Сохраняем даже пустое значение, чтобы не запрашивать повторно
                                 services_prepare_messages[service_id] = prepare_message
-
                                 if prepare_message:
                                     send_chatwoot_message(phone, prepare_message)
                                     logger.info(f"📄 Отправлено сообщение с подготовкой: {item_id}")
