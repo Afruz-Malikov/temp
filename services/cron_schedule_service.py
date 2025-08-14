@@ -330,7 +330,7 @@ def process_items_cron():
                     logger.info(f"⛔ Пропущена запись: неверный формат времени '{scheduled_at}'")
                     continue
                 date_key = dt.date().isoformat()
-                grouped['998998180817'][date_key].append({
+                grouped[phone][date_key].append({
                     "appointment_id": appt.get("id"),
                     "item": item,
                     "scheduled_at": scheduled_at,
@@ -338,7 +338,7 @@ def process_items_cron():
                     "clinic": clinic,
                     "patient": patient
                 })
-                grouped_full['998998180817'][date_key].append(appt)
+                grouped_full[phone][date_key].append(appt)
         processed_count = 0
         notified_phones = set()
         services_prepare_messages = {}
