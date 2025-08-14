@@ -17,7 +17,7 @@ CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
 GOOGLE_API_DOCS_SECRET = os.getenv("GOOGLE_API_DOCS_SECRET")
-APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY") or 'CNvy6w6CRR1QLY2V6eq6gDQT'
+APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY") or 'ENByZZnh5rvXfxHd8LeqrhVA'
 
 LAST_PROCESSED_FILE = Path("last_processed.json")
 
@@ -111,15 +111,10 @@ def send_chatwoot_message(phone, message):
         logger.error(f"Ошибка отправки в Chatwoot: {e}")
 
 city_data = {
-    "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b": {
-        "address": "г Орехово-Зуево, ул Дзержинского, стр. 41/1",
-        "site": "https://orz.mrtexpert.ru/",
-        "phone": "84961111111"
-    },
-    "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f": {
-        "address": "г Мытищи, ул Колпакова, д. 2А,  помещ. 54",
-        "site": "https://myt.mrtexpert.ru/",
-        "phone": "84953080411"
+    "19901c01-523d-11e5-bd0c-c8600054f881": {
+        "address": "г. Липецк, пл. Петра Великого, дом 2",
+        "site": "https://lip.mrtexpert.ru/clinics/1/map.svg",
+        "phone": "84742505105"
     }
 }
 
@@ -127,7 +122,7 @@ def save_last_processed_time():
     try:
         db = SessionLocal()
         moscow_tz = timezone(timedelta(hours=3))
-        now = datetime.now(moscow_tz)    
+        now = datetime.now(moscow_tz) 
         local_hour = now.astimezone(timezone(timedelta(hours=3))).hour 
         with open(LAST_PROCESSED_FILE, 'w') as f:
             json.dump({'last_processed': now.isoformat()}, f)
@@ -162,33 +157,8 @@ def save_last_processed_time():
                         SendedMessage.type.in_(["new_remind", "day_remind", "hour_remind"])
                     ).all()
                 ]
-
-                # === Обработка pending_day → day_remind ===
-                if msg.type == "pending_day" and 1400 <= minutes_to_appointment <= 1440 and "day_remind" not in sent_types and local_hour > 7:
-                    day_msg = (
-                        f"Здравствуйте!\n"
-                        f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
-                        f"Подтвердите свой визит ответным сообщением (только цифра):\n"
-                        f"1 – подтверждаю\n2 – прошу перенести\n3 – прошу отменить\n"
-                        f"Телефон для связи {phone_center}"
-                    )
-                    send_chatwoot_message(phone, day_msg)
-
-                    db.add(SendedMessage(
-                        appointment_id=msg.appointment_id,
-                        type="day_remind",
-                        scheduled_at=scheduled_at,
-                        phone_number=phone,
-                        phone_center=phone_center,
-                        appointment_json=msg.appointment_json
-                    ))
-                    db.commit()
-                    logger.info(f"📆 Утром отправлено day_remind из pending_day: {msg.appointment_id}")
-                    processed_count += 1
-                    continue
-
                 # === Обработка pending (обычные) → hour_remind ===
-                if msg.type == "pending" and 90 <= minutes_to_appointment <= 120 and "hour_remind" not in sent_types:
+                if msg.type == "pending" and 90 <= minutes_to_appointment <= 120 and "hour_remind" not in sent_types and local_hour >= 8  and local_hour < 21:
                     hour_msg = (    
                         f"Здравствуйте!\n"
                         f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
@@ -196,7 +166,6 @@ def save_last_processed_time():
                         f"Телефон для связи {phone_center}."
                     )
                     send_chatwoot_message(phone, hour_msg)
-
                     db.add(SendedMessage(
                         appointment_id=msg.appointment_id,
                         type="hour_remind",
@@ -209,7 +178,7 @@ def save_last_processed_time():
                     logger.info(f"⏰ Утром отправлено hour_remind из pending: {msg.appointment_id}")
                     processed_count += 1
                 # === Обработка pending → day_remind ===
-                if msg.type == "pending" and 1400 <= minutes_to_appointment <= 1440 and "day_remind" not in sent_types and local_hour > 7:
+                if msg.type == "pending" and 1400 <= minutes_to_appointment <= 1440 and "day_remind" not in sent_types and local_hour >= 8  and local_hour < 21:
                     day_msg = (
                         f"Здравствуйте!\n"
                         f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
@@ -230,6 +199,46 @@ def save_last_processed_time():
                     logger.info(f"📆 Утром отправлено day_remind из pending: {msg.appointment_id}")
                     processed_count += 1
                     continue
+                if msg.type == "pending" and now.hour == 20 and msg.send_after:
+                    if 24 * 60 <= minutes_to_appointment <= 24 * 60 + 13 * 60 and "day_remind" not in sent_types:
+                        day_msg = (
+                            f"Здравствуйте!\n"
+                            f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
+                            f"Подтвердите свой визит ответным сообщением (только цифра):\n"
+                            f"1 – подтверждаю\n3 – прошу отменить\n"
+                            f"Телефон для связи: {phone_center}"
+                        )
+                        send_chatwoot_message(phone, day_msg)
+                        db.add(SendedMessage(
+                            appointment_id=msg.appointment_id,
+                            type="day_remind",
+                            scheduled_at=scheduled_at,
+                            phone_number=phone,
+                            phone_center=phone_center,
+                            appointment_json=msg.appointment_json
+                        ))
+                        db.commit()
+                        logger.info(f"🌙 Догнали day_remind (+13ч): {msg.appointment_id}")
+
+                    # 2ч-догон: [120 .. 120+13h]
+                    if  2 * 60  <= minutes_to_appointment <=  90 + 13 * 60 and "hour_remind" not in sent_types:
+                        hour_msg = (
+                            f"Здравствуйте!\n"
+                            f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
+                            f"В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
+                            f"Телефон для связи {phone_center}."
+                        )
+                        send_chatwoot_message(phone, hour_msg)
+                        db.add(SendedMessage(
+                            appointment_id=msg.appointment_id,
+                            type="hour_remind",
+                            scheduled_at=scheduled_at,
+                            phone_number=phone,
+                            phone_center=phone_center,
+                            appointment_json=msg.appointment_json
+                        ))
+                        db.commit()
+                        logger.info(f"🌙 Догнали hour_remind (+13ч): {msg.appointment_id}")
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке pending сообщения {msg.appointment_id}: {e}")
 
@@ -255,25 +264,25 @@ def process_items_cron():
         auth_header = {"Authorization": f"Bearer {APPOINTMENTS_API_KEY}"}
         skip_statuses = ['paid', 'done', 'canceled', 'started']
 
-        clinics = [{
-            "id": "c389c091-be9c-11e5-9fce-a45d36c3a76c",
-            "name": "Мытищи МРТ-Эксперт",
-            "region": "Московская обл",
-            "region_code": 50,
-            "city_id": "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f",
-            "address": "141002, Московская обл, г Мытищи, ул Колпакова, д. 2А, помещ. 54",
+        clinics = [ {
+            "id": "19901c01-523d-11e5-bd0c-c8600054f881",
+            "name": "Липецк 1 МРТ-Эксперт",
+            "region": "Липецкая обл",
+            "region_code": 48,
+            "city_id": "eacb5f15-1a2e-432e-904a-ca56bd635f1b",
+            "address": "398001, Липецкая обл, Липецк г, Петра Великого пл, владение № 2",
             "work_time": {
-                "mo": "12:00-23:45",
-                "tu": "12:00-23:45",
-                "we": "12:00-23:45",
-                "th": "12:00-23:45",
-                "fr": "12:00-23:45",
-                "sa": "12:00-23:45",
-                "su": "12:00-23:45"
+                "mo": "07:00-23:00",
+                "tu": "07:00-23:00",
+                "we": "07:00-23:00",
+                "th": "07:00-23:00",
+                "fr": "07:00-23:00",
+                "sa": "07:00-23:00",
+                "su": "07:00-23:00"
             },
             "longitude": "0",
             "latitude": "0"
-        }]
+        },]
 
         clinic_map = {c['id']: c for c in clinics}
         all_appointments = []
@@ -283,31 +292,24 @@ def process_items_cron():
             if not cid:
                 continue
             try:
-                # today_str = now.strftime('%Y-%m-%d')
-                # app_resp = httpx.get(
-                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={'2025-08-09' or today_str}&created_to={'2025-08-09' or today_str}",
-                #     timeout=60,
-                #     headers=auth_header
-                # )
-                # upd_resp = httpx.get(
-                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={'2025-08-09' or today_str}&updated_to={'2025-08-09' or today_str}",
-                #     timeout=60,
-                #     headers=auth_header
-                # )
-                # app_resp.raise_for_status()
-                # upd_resp.raise_for_status()
-                # created = app_resp.json().get("result", [])
-                # updated = upd_resp.json().get("result", [])
-
-                # updated_ids = {appt['id'] for appt in updated}
-                # merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
-                # all_appointments.extend(updated + merged_appointments)
-                app_resp = httpx.get('https://6dcda2520b13.ngrok-free.app/appointments',
+                today_str = now.strftime('%Y-%m-%d')
+                app_resp = httpx.get(
+                    f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
                     timeout=60,
-                    headers={"ngrok-skip-browser-warning": "gay"}
+                    headers=auth_header
+                )
+                upd_resp = httpx.get(
+                    f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
+                    timeout=60,
+                    headers=auth_header
                 )
                 app_resp.raise_for_status()
-                all_appointments.extend(app_resp.json().get("result", []))
+                upd_resp.raise_for_status()
+                created = app_resp.json().get("result", [])
+                updated = upd_resp.json().get("result", [])
+                updated_ids = {appt['id'] for appt in updated}
+                merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
+                all_appointments.extend(updated + merged_appointments)
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
         grouped = defaultdict(lambda: defaultdict(list))
@@ -413,7 +415,7 @@ def process_items_cron():
                 full_clinic = clinic_map.get(clinic.get("id"), clinic)
                 address = full_clinic.get("address", "—")
                 directions = full_clinic.get("directions", "")
-                phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "—"))
+                phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "84742505105"))
                 minutes_to_appointment = int(delta.total_seconds() / 60)
                 if minutes_to_appointment <= 30:
                     logger.info(f"⏩ Пропущено: осталось {int(delta.total_seconds() // 60)} мин до приёма в {earliest_time.strftime('%d.%m.%Y %H:%M')}")
@@ -423,15 +425,20 @@ def process_items_cron():
                     logger.info(f"📨 Отправка напоминания {item_id} ({dt_str}) для {phone}")
                     new_msg = (
                             f"Здравствуйте!\n"
+                            f"\n"
                             f"Вы записаны в МРТ Эксперт на { 'несколько услуг, первый прием в' if len(list_of_apt_in_one_day) > 1 else ''} {dt_str}.\n"
+                            f"\n"
                             f"Адрес: {address}, {directions}\n"
+                            f"\n"
                             f"В центре нужно быть за 15 минут до приема.\n"
+                            f"\n"
                             f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
+                            f"\n"
                             f"Телефон для связи: {phone_center}\n"
+                            f"\n"
                             f"Если вы проходите процедуру МРТ впервые, рекомендуем посмотреть видео описание о том как проходит процедура по ссылке: https://vk.com/video-48669646_456239221?list=ec01502c735e906314"
                     )
                     send_chatwoot_message(phone, new_msg)
-
                     try:
                         service_id = item.get('service', {}).get('id', '')
                         if not service_id:
@@ -440,15 +447,13 @@ def process_items_cron():
                         if service_id not in services_prepare_messages:
                             try:
                                 service_resp = httpx.get(
-                                    f"https://apitest.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
+                                    f"https://api.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
                                     timeout=20,
                                     headers=auth_header
                                 )
                                 service_resp.raise_for_status()
                                 prepare_message = service_resp.json().get("result", {}).get("prepare", "")
-                                # Сохраняем даже пустое значение, чтобы не запрашивать повторно
                                 services_prepare_messages[service_id] = prepare_message
-
                                 if prepare_message:
                                     send_chatwoot_message(phone, prepare_message)
                                     logger.info(f"📄 Отправлено сообщение с подготовкой: {item_id}")
@@ -462,7 +467,6 @@ def process_items_cron():
                                 logger.info(f"📄 Отправлено сохраненное сообщение с подготовкой: {item_id}")
                     except Exception as e:
                         logger.warning(f"Ошибка получения подготовки: {e}")
-
                     db.add(SendedMessage(
                        appointment_id=item_id,
                         type="new_remind",
@@ -477,7 +481,8 @@ def process_items_cron():
                         scheduled_at=earliest_time,
                         phone_number=phone,
                         phone_center=phone_center,
-                        appointment_json=list_of_apt_in_one_day
+                        appointment_json=list_of_apt_in_one_day,
+                        send_after=True if earliest_time.hour >= 21 or earliest_time.hour < 8 else False
                     ))
                     db.commit()
 
@@ -506,7 +511,7 @@ def process_items_cron():
     finally:
         save_last_processed_time()
         db.close()
-def cleanup_old_messages():     
+def cleanup_old_messages():
     try:
         logger.info("🧹 Запуск ежедневной очистки старых сообщений")
         db = SessionLocal()

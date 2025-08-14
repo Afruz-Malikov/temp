@@ -16,10 +16,8 @@ async def process_chatwoot_webhook(request):
     processed_messages = set()
     body = await request.json()
     logger.info("Получен вебхук от Chatwoot: %s", body)
-    
     if body.get("event") != "message_created":
         return {"status": "ignored"}
-    
     message = body.get("content")
     sender = body.get("sender", {})
     sender_type = sender.get("type")
@@ -40,7 +38,8 @@ async def process_chatwoot_webhook(request):
     greenapi_url = f"https://api.green-api.com/waInstance{GREENAPI_ID}/SendMessage/{GREENAPI_TOKEN}"
     payload = {
         "chatId": chat_id,
-        "message": message
+        "message": message,
+        "linkPreview": False
     }
     async with httpx.AsyncClient() as client:
         response = await client.post(greenapi_url, json=payload)

@@ -3,3 +3,4 @@ __pycache__
 .env
 last_processed.json
 credentials.json
+service_account.json
