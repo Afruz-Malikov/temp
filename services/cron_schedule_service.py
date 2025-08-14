@@ -106,7 +106,6 @@ def send_chatwoot_message(phone, message):
                 headers={"api_access_token": CHATWOOT_API_KEY,  "Content-Type": "application/json"}, timeout=10
             )
             msg_resp.raise_for_status()
-            logger.info(f"Chatwoot ответ: {msg_resp.text}")
     except Exception as e:
         logger.error(f"Ошибка отправки в Chatwoot: {e}")
 
@@ -432,7 +431,7 @@ def process_items_cron():
                             f"\n"
                             f"В центре нужно быть за 15 минут до приема.\n"
                             f"\n"
-                            f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
+                            f"При себе необходимо иметь паспорт, снилс , направление, если оно есть, и результаты предыдущих исследований\n"
                             f"\n"
                             f"Телефон для связи: {phone_center}\n"
                             f"\n"

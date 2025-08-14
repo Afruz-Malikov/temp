@@ -244,10 +244,8 @@ async def process_greenapi_webhook(request):
         return None
 
     body = await request.json()
-    logger.info("Получен вебхук: %s", body)
 
     if body.get("typeWebhook") != "incomingMessageReceived":
-        logger.info("Пропущен вебхук не того типа")
         return {"status": "ignored"}
 
     message = ""
@@ -278,7 +276,6 @@ async def process_greenapi_webhook(request):
             contact = next((c for c in contacts if c.get("phone_number") == formatted_phone), None)
 
             if not contact:
-                logger.info({"name": sender_name, "phone_number": formatted_phone})
                 contact_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
                     json={"name": "afruz" or sender_name, "phone_number": formatted_phone},
@@ -294,7 +291,6 @@ async def process_greenapi_webhook(request):
                 else:
                     contact_resp.raise_for_status()
                     contact_json = contact_resp.json()
-                    logger.info("Создан контакт: %s", contact_json)
                     contact_id = (
                         contact_json.get("id")
                         or contact_json.get("payload", {}).get("contact", {}).get("id")
@@ -330,7 +326,6 @@ async def process_greenapi_webhook(request):
                 )
                 conv_resp.raise_for_status()
                 new_conv = conv_resp.json()
-                logger.info("Создан новый разговор: %s", new_conv)
                 conversation_id = new_conv.get("id")
                 if not conversation_id:
                     logger.warning("Не удалось получить ID созданного разговора.")
@@ -350,7 +345,6 @@ async def process_greenapi_webhook(request):
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
             )
             msg_resp.raise_for_status()
-            logger.info("Добавлено входящее сообщение в разговор %s", conversation_id)
 
             # --- AI обработка ---
             # История из GreenAPI для контекста
@@ -471,7 +465,7 @@ def fetch_google_doc_text():
     """
     Получить текст Google Docs по захардкоженному doc_id и GOOGLE_API_DOCS_SECRET
     """
-    doc_id = "1aREZDEdWBRt0N9Fxree5sZww9v47xhlXo5ZfJEK_Hac"
+    doc_id = "1dQ2k6i_c8JpByTtPy75Vr0ErohIz-e73K7hvj86R2Go"
     try:
         SCOPES = ['https://www.googleapis.com/auth/documents.readonly']
         credentials = service_account.Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
