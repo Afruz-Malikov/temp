@@ -204,7 +204,7 @@ def save_last_processed_time():
                             f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
                             f"Подтвердите свой визит ответным сообщением (только цифра):\n"
                             f"1 – подтверждаю\n3 – прошу отменить\n"
-                            f"Телефон для связи: {phone_center}"
+                            f"Для переноса записи обратитесь к нам по телефону: {phone_center}"
                         )
                         send_chatwoot_message(phone, day_msg)
                         db.add(SendedMessage(
