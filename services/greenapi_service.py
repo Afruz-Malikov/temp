@@ -61,29 +61,95 @@ async def append_to_google_sheet(date_str: str, phone: str, decision: str, clini
         await asyncio.to_thread(_append_row_sync, date_str, phone, decision,clinic_name)
     except Exception as e:
         print(f"⚠️ Не удалось записать в Google Sheets: {e} | {date_str=} {phone=} {decision=}")
-def extract_scheduled_at(message: str) -> str:
+def extract_scheduled_at(message: str) -> str | None:
     """
-    Извлекает дату и время appointment из текста уведомления.
-    Возвращает строку в формате 'YYYY-MM-DD HH:MM' или None, если не найдено.
+    Ищет дату/время визита в тексте и возвращает 'YYYY-MM-DD HH:MM' или None.
+    Поддерживаемые варианты:
+      - 'на 2025-08-20 14:00'
+      - 'на 20.08.2025 в 14:00' (также 20-08-2025 / 20/08/2025)
+      - 'на 20.08 в 14:00'  (год подставим текущий)
+      - 'на 20 августа 2025 в 14:00' / 'на 20 августа в 14:00'
+      - 'сегодня в 14:00' / 'завтра в 09:30'
+      - время может быть '14:00' или '14.00'
     """
     import re
-    from datetime import datetime, date
+    from datetime import datetime, date, timedelta
 
-    # 1. Поиск формата "на YYYY-MM-DD HH:MM"
-    match = re.search(r"на (\d{4}-\d{2}-\d{2} \d{2}:\d{2})", message)
-    if match:
-        return match.group(1)
-    # 2. Поиск формата "на DD.MM.YYYY в HH:MM"
-    match = re.search(r"на (\d{2}\.\d{2}\.\d{4}) в (\d{2}:\d{2})", message)
-    if match:
-        # Преобразуем в ISO формат
-        dt = datetime.strptime(f"{match.group(1)} {match.group(2)}", "%d.%m.%Y %H:%M")
+    MONTHS_RU = {
+        "январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5,    # май/мая
+        "июн": 6, "июл": 7, "август": 8, "сентябр": 9,
+        "октябр": 10, "ноябр": 11, "декабр": 12,
+    }
+
+    def clean(s: str) -> str:
+        s = re.sub(r"[–—−]+", "-", s)     # все длинные дефисы -> '-'
+        s = re.sub(r"\s+", " ", s)        # схлопываем пробелы
+        return s.strip()
+
+    text = clean(message)
+
+    # Попробуем анализировать часть после "на ...", т.к. обычно сразу там дата/время
+    m_after = re.search(r"\bна\b(.+)", text, flags=re.IGNORECASE)
+    scope = m_after.group(1).strip() if m_after else text
+
+    now = datetime.now()
+    this_year = now.year
+
+    def build_and_return(y: int, m: int, d: int, hh: int, mm: int) -> str | None:
+        try:
+            dt = datetime(y, m, d, hh, mm)
+        except ValueError:
+            return None
         return dt.strftime("%Y-%m-%d %H:%M")
-    # 3. Поиск "сегодня в HH:MM"
-    match = re.search(r"сегодня в (\d{2}:\d{2})", message)
-    if match:
-        today = date.today().strftime("%Y-%m-%d")
-        return f"{today} {match.group(1)}"
+
+    # 0) 'сегодня/завтра в HH:MM'
+    m = re.search(r"\b(сегодня|завтра)\b\s*(?:в\s*)?(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)", text, re.IGNORECASE)
+    if m:
+        base_date = date.today() + (timedelta(days=1) if m.group(1).lower() == "завтра" else timedelta(days=0))
+        return build_and_return(base_date.year, base_date.month, base_date.day, int(m.group("h")), int(m.group("min")))
+
+    # 1) ISO-подобный: 'YYYY-MM-DD HH:MM' (или с . / /)
+    m = re.search(
+        r"(?P<y>\d{4})[.\-\/](?P<mo>0?[1-9]|1[0-2])[.\-\/](?P<d>0?[1-9]|[12]\d|3[01])\s+(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)",
+        scope
+    )
+    if m:
+        return build_and_return(int(m.group("y")), int(m.group("mo")), int(m.group("d")), int(m.group("h")), int(m.group("min")))
+
+    # 2) Числовая дата с годом + время: 'DD.MM.YYYY в HH:MM' (точки/дефисы/слеши)
+    m = re.search(
+        r"(?P<d>0?[1-9]|[12]\d|3[01])[.\-\/](?P<mo>0?[1-9]|1[0-2])[.\-\/](?P<y>\d{4}).{0,20}?(?:в\s*)?(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)",
+        scope, re.IGNORECASE
+    )
+    if m:
+        return build_and_return(int(m.group("y")), int(m.group("mo")), int(m.group("d")), int(m.group("h")), int(m.group("min")))
+
+    # 3) Текстовая дата (+/- год) + время: '20 августа (2025) в 14:00'
+    m = re.search(
+        r"(?P<d>0?[1-9]|[12]\d|3[01])\s+"
+        r"(?P<mon>январ[ья]|феврал[ья]|март[а]?|апрел[ья]|ма[йя]|июн[ья]|июл[ья]|август[а]?|сентябр[ья]|октябр[ья]|ноябр[ья]|декабр[ья])"
+        r"(?:\s+(?P<y>\d{4}))?.{0,20}?(?:в\s*)?(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)",
+        scope, re.IGNORECASE
+    )
+    if m:
+        mon_raw = m.group("mon").lower()
+        month = None
+        for key, val in MONTHS_RU.items():
+            if mon_raw.startswith(key):
+                month = val
+                break
+        if month:
+            year = int(m.group("y")) if m.group("y") else this_year
+            return build_and_return(year, month, int(m.group("d")), int(m.group("h")), int(m.group("min")))
+
+    # 4) Числовая дата без года + время: 'DD.MM в HH:MM' -> подставим текущий год
+    m = re.search(
+        r"(?P<d>0?[1-9]|[12]\d|3[01])[.\-\/](?P<mo>0?[1-9]|1[0-2]).{0,20}?(?:в\s*)?(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)",
+        scope, re.IGNORECASE
+    )
+    if m:
+        return build_and_return(this_year, int(m.group("mo")), int(m.group("d")), int(m.group("h")), int(m.group("min")))
+
     return None
 
 def normalize_dt(dt_str):
