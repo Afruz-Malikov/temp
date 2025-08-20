@@ -180,13 +180,12 @@ def save_last_processed_time():
                 if msg.type == "pending" and 1400 <= minutes_to_appointment <= 1440 and "day_remind" not in sent_types and local_hour >= 8  and local_hour < 21:
                     day_msg = (
                         f"Здравствуйте!\n"
-                        f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
+                        f"Напоминаем, что вы записаны в Клинику Эксперт на {dt_str}.\n"
                         f"Подтвердите свой визит ответным сообщением (только цифра):\n"
-                        f"1 – подтверждаю\n2 – прошу перенести\n3 – прошу отменить\n"
-                        f"Телефон для связи: {phone_center}"
+                        f"1 – подтверждаю\n3 – прошу отменить\n"
+                        f"Для переноса записи обратитесь к нам по телефону: {phone_center}"
                     )
                     send_chatwoot_message(phone, day_msg)
-
                     db.add(SendedMessage(
                         appointment_id=msg.appointment_id,
                         type="day_remind",
@@ -408,7 +407,6 @@ def process_items_cron():
                         db.delete(reminder)
                     db.commit()
                     logger.info(f"✏️ Обновлено pending сообщение для {item_id}: новое время {earliest_time.isoformat()}")
-
                 delta = earliest_time - now
                 dt_str = earliest_time.strftime('%d.%m.%Y %H:%M')
                 full_clinic = clinic_map.get(clinic.get("id"), clinic)

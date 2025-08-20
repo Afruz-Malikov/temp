@@ -34,7 +34,7 @@ CITY_IDS = [
     "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b",
     "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f"
 ]
-APPOINTMENTS_API_URL_V3 = "https://apitest.mrtexpert.ru/api/v3/appointments"
+APPOINTMENTS_API_URL_V3 = "https://api.mrtexpert.ru/api/v3/appointments"
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 def _get_sheets_service():
     if not GOOGLE_SA_FILE:
