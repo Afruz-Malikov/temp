@@ -331,7 +331,7 @@ async def process_greenapi_webhook(request):
             return "desc_cons"
 
         # Просрочка описания (на случай текстовой формы)
-        if "приносим извинение за увеличение сроков описания." in t:
+        if "Приносим извинение за увеличение сроков описания." in t:
             return "broken_time"
 
         return None
