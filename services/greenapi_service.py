@@ -295,6 +295,8 @@ def get_greenapi_chat_history(chat_id, count=18):
         return []
 
 async def process_greenapi_webhook(request):
+    logger = logging.getLogger("uvicorn.webhook")
+
     def _parse_ai_control(ai_reply: str):
         """
         Пытается распарсить управляющий JSON:
@@ -312,6 +314,46 @@ async def process_greenapi_webhook(request):
                 return data
         except Exception:
             return None
+        return None
+
+    def _extract_phone(text):
+        """
+        Достаёт номер телефона из текста напоминания, например:
+        'Для переноса записи обратитесь к нам по телефону: 84742505105'
+        Возвращает нормализованный номер (только цифры и ведущий '+').
+        """
+        if not text:
+            return None
+
+        # приоритетно — сразу после слов "по телефону"/"телефон"
+        m = re.search(r'(?:по\s+телефону|телефон)[^0-9+]*[:\-]?\s*([+()\-\s\d]{7,})',
+                      text, flags=re.IGNORECASE)
+        cand = m.group(1).strip() if m else None
+
+        if not cand:
+            # иначе — последняя подходящая цифровая группа
+            m2 = re.findall(r'(\+?\d[\d\-\s()]{6,}\d)', text)
+            if m2:
+                cand = m2[-1].strip()
+
+        if not cand:
+            return None
+
+        num = re.sub(r'[^\d+]', '', cand)
+        if num.count('+') > 1:
+            num = '+' + num.replace('+', '')
+        return num or None
+
+    def _find_last_phone_in_history(greenapi_history):
+        """
+        Ищем телефон в последнем исходящем (outgoing) сообщении — там лежит шаблон уведомления.
+        """
+        for h in reversed(greenapi_history or []):
+            if h.get("type") == "outgoing":
+                txt = h.get("textMessage") or h.get("text") or ""
+                ph = _extract_phone(txt)
+                if ph:
+                    return ph
         return None
 
     body = await request.json()
@@ -343,7 +385,9 @@ async def process_greenapi_webhook(request):
     try:
         async with httpx.AsyncClient() as client:
             # --- Контакт в Chatwoot ---
-            contacts = await get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
+            contacts = await get_all_chatwoot_contacts(
+                client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY
+            )
             contact = next((c for c in contacts if c.get("phone_number") == formatted_phone), None)
 
             if not contact:
@@ -353,7 +397,9 @@ async def process_greenapi_webhook(request):
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
                 )
                 if contact_resp.status_code == 422 and "Phone number has already been taken" in contact_resp.text:
-                    contacts = await get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
+                    contacts = await get_all_chatwoot_contacts(
+                        client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY
+                    )
                     contact = next((c for c in contacts if c.get("phone_number") == formatted_phone), None)
                     if contact:
                         contact_id = contact["id"]
@@ -402,7 +448,7 @@ async def process_greenapi_webhook(request):
                     logger.warning("Не удалось получить ID созданного разговора.")
                     return {"status": "error", "detail": "no conversation id"}
 
-            # Назначить оператора 3
+            # Назначить оператора 3 (для существующего диалога тоже)
             await client.patch(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
                 json={"assignee_id": 3},
@@ -418,7 +464,6 @@ async def process_greenapi_webhook(request):
             msg_resp.raise_for_status()
 
             # --- AI обработка ---
-            # История из GreenAPI для контекста
             greenapi_history = get_greenapi_chat_history(sender_chat_id)
             system_prompt = fetch_google_doc_text() or "You are a helpful assistant."
             gpt_messages = [{"role": "system", "content": system_prompt}]
@@ -435,6 +480,14 @@ async def process_greenapi_webhook(request):
 
             ctrl = _parse_ai_control(ai_reply)
 
+            # телефон центра: из последнего исходящего напоминания;
+            # если вдруг нет — пробуем вытащить из ответа ИИ или текущего входящего текста
+            phone_center = (
+                _find_last_phone_in_history(greenapi_history)
+                or _extract_phone(ai_reply)
+                or _extract_phone(message)
+            )
+
             # --- Управляющие команды от ИИ ---
             if ctrl and ctrl.get("type") == "operator_connect":
                 operator_message = ctrl.get("message") or "Клиенту требуется оператор."
@@ -448,7 +501,14 @@ async def process_greenapi_webhook(request):
                 return {"status": "ok"}
 
             if ctrl and ctrl.get("type") == "confirm":
-                thank_you_msg = "Спасибо за подтверждение записи. Ждём вас за 15 минут до приёма."
+                # НОВЫЙ текст + телефон из напоминания
+                thank_you_msg = (
+                    "Спасибо за подтверждение записи.\n"
+                    "Ждем вас за 15 минут до начала приема со всеми необходимыми документами.\n"
+                )
+                if phone_center:
+                    thank_you_msg += f"\nЕсли у вас изменятся планы, пожалуйста, свяжитесь с нами по телефону {phone_center}"
+
                 ai_msg_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                     json={"content": thank_you_msg, "message_type": "outgoing"},
@@ -459,7 +519,11 @@ async def process_greenapi_webhook(request):
                 return {"status": "ok"}
 
             if ctrl and ctrl.get("type") == "cancel":
-                cancel_msg = "Вашу запись отменяем. Если потребуется новая запись, напишите нам или позвоните."
+                # НОВЫЙ текст + телефон из напоминания
+                cancel_msg = "Благодарим за обратную связь!\n"
+                if phone_center:
+                    cancel_msg += f"Вы в любой момент можете восстановить Вашу запись по телефону {phone_center}"
+
                 ai_msg_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                     json={"content": cancel_msg, "message_type": "outgoing"},

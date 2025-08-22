@@ -62,8 +62,8 @@ def day_window_for(scheduled_at: datetime, tz: timezone = MOSCOW_TZ):
     Окно для суточного напоминания: [09:00;10:00) за сутки до приёма.
     """
     appt_local = (scheduled_at if scheduled_at.tzinfo else scheduled_at.replace(tzinfo=tz)).astimezone(tz)
-    start = datetime.combine(appt_local.date() - timedelta(days=1), time(9, 0), tz)
-    end   = datetime.combine(appt_local.date() - timedelta(days=1), time(10, 0), tz)
+    start = datetime.combine(appt_local.date() - timedelta(days=1), time(11, 0), tz)
+    end   = datetime.combine(appt_local.date() - timedelta(days=1), time(12, 0), tz)
     return start, end
 
 def get_last_processed_time():
