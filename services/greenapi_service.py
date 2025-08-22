@@ -560,8 +560,9 @@ async def process_greenapi_webhook(request):
                     gpt_messages.append({"role": "user", "content": msg.get("textMessage", "")})
                 elif msg.get("type") == "outgoing":
                     gpt_messages.append({"role": "assistant", "content": msg.get("textMessage", "")})
-            if not any(m.get("content") == message for m in gpt_messages if m["role"] == "user"):
+            if not gpt_messages or gpt_messages[-1].get("role") != "user" or gpt_messages[-1].get("content") != message:
                 gpt_messages.append({"role": "user", "content": message})
+
 
             ai_reply = await call_ai_service(gpt_messages)
             logger.debug(f"AI reply raw: {ai_reply!r}")
