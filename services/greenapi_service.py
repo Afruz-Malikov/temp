@@ -355,6 +355,19 @@ async def process_greenapi_webhook(request):
                     return ph
         return None
 
+    def _is_valid_ai_reply(reply: str) -> bool:
+        """
+        Проверяет, что ответ GPT не пустой/мусорный.
+        """
+        if not reply:
+            return False
+        text = reply.strip()
+        if not text:
+            return False
+        if text in ("{}", "[]"):
+            return False
+        return True
+
     body = await request.json()
 
     if body.get("typeWebhook") != "incomingMessageReceived":
@@ -477,6 +490,10 @@ async def process_greenapi_webhook(request):
             ai_reply = await call_ai_service(gpt_messages)
             logger.debug(f"AI reply raw: {ai_reply!r}")
 
+            if not _is_valid_ai_reply(ai_reply):
+                logger.info("Игнорируем пустой/некорректный ответ от GPT")
+                return {"status": "ok"}
+
             ctrl = _parse_ai_control(ai_reply)
 
             # телефон центра: из последнего исходящего напоминания;
@@ -536,7 +553,7 @@ async def process_greenapi_webhook(request):
             if ai_reply and not ctrl:
                 ai_msg_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                    json={"content": ai_reply, "message_type": "outgoing"},
+                    json={"content": ai_reply.strip(), "message_type": "outgoing"},
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
                 )
                 ai_msg_resp.raise_for_status()
