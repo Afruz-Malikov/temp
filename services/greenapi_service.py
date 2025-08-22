@@ -204,7 +204,7 @@ async def change_appointment_by_message(message: str, phone_number: str, status:
         if not record:
             print(f"❌ Не найдено уведомление с телефоном {phone_number} и временем {scheduled_at}")
             return
-        
+        await append_to_google_sheet(scheduled_at_str, phone_number, status, "Липецк 1 МРТ-Эксперт")
         appts_list = record.appointment_json or []
         if not isinstance(appts_list, list) or not appts_list:
             print("❌ В записи нет валидного appointment_json (ожидался список)")
@@ -217,7 +217,6 @@ async def change_appointment_by_message(message: str, phone_number: str, status:
                     print("⚠️ Пропуск: у одного из объектов нет id")
                     continue
                 clinic_id = (appt.get("clinic") or {}).get("id")
-                await append_to_google_sheet(scheduled_at_str, phone_number, status, (appt.get("clinic") or {}).get('name', ''))
                 patient = appt.get("patient", {}) or {}
                 patch_patient = {
                     "firstname": patient.get("firstname", ""),
