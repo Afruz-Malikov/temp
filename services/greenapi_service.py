@@ -296,6 +296,85 @@ def get_greenapi_chat_history(chat_id, count=18):
 async def process_greenapi_webhook(request):
     logger = logging.getLogger("uvicorn.webhook")
 
+    # ======================== Labels & detection ========================
+    ACTION_TO_LABEL = {
+        "confirm":       "подтвердил_запись",
+        "cancel":        "отмена",
+        "desc_cons":     "консультация_по_описанию",
+        "price_cons":    "консультация_по_стоимости_и_записи",
+        "broken_time":   "нарушен_срок_описания",
+        "tax_cert":      "справка_в_налоговую",
+    }
+
+    def detect_action_from_ai_reply(ai_reply: str) -> str | None:
+        """Определяет action по точным формулировкам из таблицы (только для текстовых ответов)."""
+        if not ai_reply:
+            return None
+        import re as _re
+
+        def _norm(s: str) -> str:
+            s = s.replace(" ", " ")
+            s = _re.sub(r"\s+", " ", s.strip())
+            return s.lower()
+
+        t = _norm(ai_reply)
+
+        # Главное меню
+        if t.startswith(_norm("Пока в чате мы информируем по уже оформленным записям.")):
+            return "price_cons"
+        if t.startswith(_norm("Налоговый вычет возвращается не ранее года, следующего за годом оплаты.")):
+            return "tax_cert"
+        # Вложенные ответы
+        if t.startswith(_norm("В поле «Фамилия» введите фамилию пациента, указанную в договоре (без инициалов, пробелов и опечаток).")):
+            return "desc_cons"
+        if t.startswith(_norm("Важно:")) or "telemedex" in t:
+            return "desc_cons"
+
+        # Просрочка описания (на случай текстовой формы)
+        if "приносим извинение за увеличение сроков описания." in t:
+            return "broken_time"
+
+        return None
+
+    # ======================== Chatwoot helpers ========================
+    async def _cw_list_labels(client) -> list[dict]:
+        r = await client.get(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/labels",
+            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+        )
+        r.raise_for_status()
+        data = r.json()
+        return (data.get("payload") or data.get("data") or data) if isinstance(data, (list, dict)) else []
+
+    def _pick_label(existing_labels: list[dict], wanted_name: str) -> str | None:
+        if not wanted_name:
+            return None
+        wn = wanted_name.strip().lower().replace(" ", "_")
+        for it in existing_labels:
+            name = (it.get("title") or it.get("name") or "").strip()
+            if name.lower().replace(" ", "_") == wn:
+                return name
+        return None
+
+    async def _cw_add_labels(client, conversation_id: int, labels: list[str]):
+        if not labels:
+            return
+        r = await client.post(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/labels",
+            json={"labels": labels},
+            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+        )
+        r.raise_for_status()
+
+    async def _cw_resolve(client, conversation_id: int):
+        r = await client.post(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_status",
+            json={"status": "resolved"},
+            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+        )
+        r.raise_for_status()
+
+    # ======================== Existing utils (unchanged behavior) ========================
     def _parse_ai_control(ai_reply: str):
         """
         Пытается распарсить управляющий JSON:
@@ -324,13 +403,10 @@ async def process_greenapi_webhook(request):
         if not text:
             return None
 
-        # приоритетно — сразу после слов "по телефону"/"телефон"
-        m = re.search(r'(?:по\s+телефону|телефон)[^0-9+]*[:\-]?\s*([+()\-\s\d]{7,})',
-                      text, flags=re.IGNORECASE)
+        m = re.search(r'(?:по\s+телефону|телефон)[^0-9+]*[:\-]?\s*([+()\-\s\d]{7,})', text, flags=re.IGNORECASE)
         cand = m.group(1).strip() if m else None
 
         if not cand:
-            # иначе — последняя подходящая цифровая группа
             m2 = re.findall(r'(\+?\d[\d\-\s()]{6,}\d)', text)
             if m2:
                 cand = m2[-1].strip()
@@ -368,6 +444,7 @@ async def process_greenapi_webhook(request):
             return False
         return True
 
+    # ======================== Main flow ========================
     body = await request.json()
 
     if body.get("typeWebhook") != "incomingMessageReceived":
@@ -496,8 +573,7 @@ async def process_greenapi_webhook(request):
 
             ctrl = _parse_ai_control(ai_reply)
 
-            # телефон центра: из последнего исходящего напоминания;
-            # если вдруг нет — пробуем вытащить из ответа ИИ или текущего входящего текста
+            # телефон центра: из последнего исходящего напоминания; fallback — из текста
             phone_center = (
                 _find_last_phone_in_history(greenapi_history)
                 or _extract_phone(ai_reply)
@@ -516,40 +592,48 @@ async def process_greenapi_webhook(request):
                 await unassign_conversation(phone)
                 return {"status": "ok"}
 
-            if ctrl and ctrl.get("type") == "confirm":
-                # НОВЫЙ текст + телефон из напоминания
-                thank_you_msg = (
-                    "Спасибо за подтверждение записи.\n"
-                    "Ждем вас за 15 минут до начала приема со всеми необходимыми документами.\n"
-                )
-                if phone_center:
-                    thank_you_msg += f"\nЕсли у вас изменятся планы, пожалуйста, свяжитесь с нами по телефону {phone_center}"
+            if ctrl and ctrl.get("type") in ("confirm", "cancel"):
+                # 1) финальный текст
+                if ctrl["type"] == "confirm":
+                    out = (
+                        "Спасибо за подтверждение записи.\n"
+                        "Ждем вас за 15 минут до начала приема со всеми необходимыми документами.\n"
+                    )
+                    if phone_center:
+                        out += f"\nЕсли у вас изменятся планы, пожалуйста, свяжитесь с нами по телефону {phone_center}"
+                else:
+                    out = "Благодарим за обратную связь!\n"
+                    if phone_center:
+                        out += f"Вы в любой момент можете восстановить Вашу запись по телефону {phone_center}"
 
-                ai_msg_resp = await client.post(
+                r = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                    json={"content": thank_you_msg, "message_type": "outgoing"},
+                    json={"content": out, "message_type": "outgoing"},
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
                 )
-                ai_msg_resp.raise_for_status()
-                await change_appointment_by_message(ctrl.get("message", ""), phone, "confirm")
-                return {"status": "ok"}
+                r.raise_for_status()
 
-            if ctrl and ctrl.get("type") == "cancel":
-                # НОВЫЙ текст + телефон из напоминания
-                cancel_msg = "Благодарим за обратную связь!\n"
-                if phone_center:
-                    cancel_msg += f"Вы в любой момент можете восстановить Вашу запись по телефону {phone_center}"
+                # 2) ярлык + закрытие
+                try:
+                    wanted_label = ACTION_TO_LABEL.get(ctrl["type"])
+                    existing = await _cw_list_labels(client)
+                    label_to_use = _pick_label(existing, wanted_label)
+                    if label_to_use:
+                        await _cw_add_labels(client, conversation_id, [label_to_use])
+                    else:
+                        logger.warning(f"Ярлык '{wanted_label}' не найден среди категорий — пропускаю навешивание")
+                    await _cw_resolve(client, conversation_id)
+                except Exception as lab_e:
+                    logger.warning(f"Не удалось навесить ярлык/закрыть разговор: {lab_e}")
 
-                ai_msg_resp = await client.post(
-                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                    json={"content": cancel_msg, "message_type": "outgoing"},
-                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+                # 3) доменная логика
+                await change_appointment_by_message(
+                    ctrl.get("message", ""), phone,
+                    "confirm" if ctrl["type"] == "confirm" else "canceled"
                 )
-                ai_msg_resp.raise_for_status()
-                await change_appointment_by_message(ctrl.get("message", ""), phone, "canceled")
                 return {"status": "ok"}
 
-            # --- Обычный текстовый ответ ИИ ---
+            # --- Обычный текстовый ответ ИИ (меню) ---
             if ai_reply and not ctrl:
                 ai_msg_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
@@ -558,6 +642,19 @@ async def process_greenapi_webhook(request):
                 )
                 ai_msg_resp.raise_for_status()
                 logger.info("AI ответ отправлен в разговор %s", conversation_id)
+
+                # навешиваем ярлык в зависимости от текста
+                try:
+                    action = detect_action_from_ai_reply(ai_reply)
+                    if action:
+                        existing = await _cw_list_labels(client)
+                        wanted_label = ACTION_TO_LABEL.get(action)
+                        label_to_use = _pick_label(existing, wanted_label)
+                        if label_to_use:
+                            await _cw_add_labels(client, conversation_id, [label_to_use])
+                            logger.info(f"Навешен ярлык '{label_to_use}' для action '{action}'")
+                except Exception as lab_e:
+                    logger.warning(f"Не удалось навесить ярлык по тексту: {lab_e}")
 
     except Exception as e:
         logger.exception("Ошибка: %s", e)

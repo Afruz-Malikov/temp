@@ -62,8 +62,8 @@ def day_window_for(scheduled_at: datetime, tz: timezone = MOSCOW_TZ):
     Окно для суточного напоминания: [09:00;10:00) за сутки до приёма.
     """
     appt_local = (scheduled_at if scheduled_at.tzinfo else scheduled_at.replace(tzinfo=tz)).astimezone(tz)
-    start = datetime.combine(appt_local.date() - timedelta(days=1), time(11, 0), tz)
-    end   = datetime.combine(appt_local.date() - timedelta(days=1), time(12, 0), tz)
+    start = datetime.combine(appt_local.date() - timedelta(days=1), time(9, 0), tz)
+    end   = datetime.combine(appt_local.date() - timedelta(days=1), time(10, 0), tz)
     return start, end
 
 def get_last_processed_time():
@@ -93,64 +93,136 @@ def get_all_chatwoot_contacts(client, base_url, account_id, api_key):
         page += 1
     return contacts
 
-def send_chatwoot_message(phone, message):
+# === 1) helpers ===============================================================
+def cw_list_labels(client) -> list[dict]:
+    """
+    Возвращает список ярлыков аккаунта Chatwoot.
+    Эндпоинт: GET /api/v1/accounts/{ACCOUNT_ID}/labels
+    """
+    r = client.get(
+        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/labels",
+        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
+        timeout=10
+    )
+    r.raise_for_status()
+    data = r.json()
+    labels = data.get("payload", [])
+    return labels 
+def pick_label(existing_labels: list[dict], wanted_name: str) -> str | None:
+    """
+    Возвращает точное имя ярлыка из существующих (если есть), иначе None.
+    Chatwoot в ответе может прислать ключ 'title' или 'name' — поддержим оба.
+    """
+    for it in existing_labels:
+        name = it.get("title") or it.get("name")
+        if name == wanted_name:
+            return name
+    return None
+
+# === 2) обновлённая send_chatwoot_message ====================================
+def send_chatwoot_message(phone: str, message: str, action: str, assignee_id: int = 3):
+    """
+    phone   — номер БЕЗ '+'
+    action  — None | 'confirm' | 'cancel' | 'info' | 'info_2' | 'price_cons' | 'desc_cons' | 'broken_time' | 'tax_cert'
+    """
+    ACTION_TO_LABEL = {
+    "confirm":       "подтвердил_запись",
+    "cancel":        "отмена",
+    "info":          "информирование",
+    "info_2":        "информирование_2",
+    "desc_cons":     "консультация_по_описанию",
+    "price_cons":    "консультация_по_стоимости_и_записи",
+    "broken_time":   "нарушен_срок_описания",
+    "tax_cert":      "справка_в_налоговую",
+}
+
+
     try:
-        with httpx.Client() as client:
+        with httpx.Client(timeout=10.0) as client:
+            # 1) контакт
             contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
-            contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
+            contact = next((c for c in contacts if c.get("phone_number") == f"+{phone}"), None)
             if not contact:
-                contact_resp = client.post(
+                r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
                     json={"name": f"+{phone}", "phone_number": f"+{phone}"},
-                    headers={"api_access_token": CHATWOOT_API_KEY,"Content-Type": "application/json"}, timeout=10
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                 )
-                contact_resp.raise_for_status()
-                contact_json = contact_resp.json()
-                contact_id = (
-                    contact_json.get("id")
-                    or contact_json.get("payload", {}).get("contact", {}).get("id")
-                    or contact_json.get("contact", {}).get("id")
-                )
+                r.raise_for_status()
+                cj = r.json()
+                contact_id = cj.get("id") or cj.get("payload", {}).get("contact", {}).get("id") or cj.get("contact", {}).get("id")
                 if not contact_id:
-                    logger.error(f"Не удалось получить contact_id из ответа: {contact_resp.text}")
+                    logger.error(f"Не удалось получить contact_id: {cj}")
                     return
             else:
                 contact_id = contact["id"]
-            convs_resp = client.get(
+
+            # 2) беседа (ищем открытую, иначе создаём)
+            r = client.get(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
-                headers={"api_access_token": CHATWOOT_API_KEY,   "Content-Type": "application/json"}, timeout=10
+                headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
             )
-            convs_resp.raise_for_status()
-            conversations = convs_resp.json().get("payload", [])
-            if conversations:
-                conversation_id = conversations[0]["id"]
-                # Назначить оператора 3 на conversation
-                answ = client.patch(
-                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
-                    json={"assignee_id": 3},
-                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}, timeout=10  
-                )
-                print("answ",answ)
+            r.raise_for_status()
+            conversations = (r.json().get("payload") or r.json().get("data") or [])
+            open_conv = next((c for c in conversations if c.get("status") == "open"), None)
+
+            if open_conv:
+                conversation_id = open_conv["id"]
+                if assignee_id:
+                    client.patch(
+                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
+                        json={"assignee_id": assignee_id},
+                        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
+                    )
             else:
-                conv_resp = client.post(
+                r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
                     json={
                         "inbox_id": int(CHATWOOT_INBOX_ID),
                         "contact_id": contact_id,
-                        "source_id": f"{phone.replace('+', '')}@c.us",
-                        "additional_attributes": {},
-                        "status": "open"
+                        "source_id": f"{phone}@c.us",
+                        "status": "open",
+                        "assignee_id": assignee_id or None,
                     },
-                    headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                 )
-                conv_resp.raise_for_status()
-                conversation_id = conv_resp.json().get("id")
-            msg_resp = client.post(
+                r.raise_for_status()
+                cj = r.json()
+                conversation_id = cj.get("id") or cj.get("payload", {}).get("id") or cj.get("conversation", {}).get("id")
+
+            # 3) сообщение
+            r = client.post(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                 json={"content": message, "message_type": "outgoing"},
-                headers={"api_access_token": CHATWOOT_API_KEY,  "Content-Type": "application/json"}, timeout=10
+                headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
             )
-            msg_resp.raise_for_status()
+            r.raise_for_status()
+
+            # 4) если нужно — подобрать ЯРЛЫК из АКТУАЛЬНОГО списка и закрыть
+            if action in ACTION_TO_LABEL:
+                wanted = ACTION_TO_LABEL[action]
+                existing = cw_list_labels(client)              # <-- тянем актуальные категории
+                label_to_use = pick_label(existing, wanted)    # <-- берём нужный по имени
+                if label_to_use:
+                    r = client.post(
+                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/labels",
+                        json={"labels": [label_to_use]},
+                        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
+                    )
+                    r.raise_for_status()
+                else:
+                    logger.warning(f"Ярлык '{wanted}' не найден среди категорий аккаунта — пропускаю навешивание")
+
+                # закрыть диалог
+                r = client.post(
+                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_status",
+                    json={"status": "resolved"},
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
+                )
+                r.raise_for_status()
+
+            return conversation_id
+
     except Exception as e:
         logger.error(f"Ошибка отправки в Chatwoot: {e}")
 
@@ -255,7 +327,7 @@ def save_last_processed_time():
                             f"В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                             f"Телефон для связи {phone_center}."
                         )
-                        send_chatwoot_message(phone, hour_msg)
+                        send_chatwoot_message(phone, hour_msg,action="info_2")
                         db.add(SendedMessage(
                             appointment_id=msg.appointment_id,
                             type="hour_remind",
@@ -462,7 +534,7 @@ def process_items_cron():
                             f"\n"
                             f"Если вы проходите процедуру МРТ впервые, рекомендуем посмотреть видео описание о том как проходит процедура по ссылке: https://vk.com/video-48669646_456239221?list=ec01502c735e906314"
                     )
-                    send_chatwoot_message(phone, new_msg)
+                    send_chatwoot_message(phone, new_msg, action="info")
                     try:
                         service_id = item.get('service', {}).get('id', '')
                         if not service_id:
