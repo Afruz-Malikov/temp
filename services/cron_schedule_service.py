@@ -526,22 +526,30 @@ def cleanup_old_messages():
         db = SessionLocal()
         tz_msk = timezone(timedelta(hours=3))
         now = datetime.now(tz=tz_msk)
+
         messages = db.query(SendedMessage).all()
         deleted_count = 0
 
         for msg in messages:
             try:
-                scheduled_at_str = msg.scheduled_at
-                scheduled_at = datetime.fromisoformat(scheduled_at_str)
+                scheduled_at = msg.scheduled_at
+                if scheduled_at is None:
+                    continue    
                 if scheduled_at.tzinfo is None:
-                    scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+                    scheduled_at = scheduled_at.replace(tzinfo=tz_msk)
+                else:
+                    scheduled_at = scheduled_at.astimezone(tz_msk)
+
                 if scheduled_at < now:
                     db.delete(msg)
                     deleted_count += 1
+
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка при парсинге даты у сообщения {msg.id}: {e}")
+                logger.warning(f"⚠️ Ошибка при обработке сообщения {msg.id}: {e}")
+
         db.commit()
         logger.info(f"🗑 Удалено {deleted_count} устаревших сообщений")
+
     except Exception as e:
         logger.error(f"❌ Ошибка при очистке старых сообщений: {e}")
     finally:
