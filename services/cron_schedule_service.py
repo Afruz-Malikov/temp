@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone,time  
 import httpx
 import os
 import json
@@ -20,6 +20,51 @@ GOOGLE_API_DOCS_SECRET = os.getenv("GOOGLE_API_DOCS_SECRET")
 APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY") or 'ENByZZnh5rvXfxHd8LeqrhVA'
 
 LAST_PROCESSED_FILE = Path("last_processed.json")
+
+MOSCOW_TZ = timezone(timedelta(hours=3))  
+def two_hour_window_for(scheduled_at: datetime, tz: timezone = MOSCOW_TZ):
+    """
+    Возвращает (start,end) окна отправки 2-часового напоминания.
+    Окна:
+      23:00–23:59  -> 20:00 (сегодня)
+      00:00–07:59  -> 20:00 (вчера)
+      08:00–08:59  -> 07:00 (сегодня)
+      09:00–22:59  -> за 2 часа (окно 10 минут)
+    """
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=tz)
+    local_dt = scheduled_at.astimezone(tz)
+    t = local_dt.time()
+    d = local_dt.date()
+
+    if t >= time(23, 0):  # 23:00–23:59
+        start = datetime.combine(d, time(20, 0), tz)
+        end   = datetime.combine(d, time(21, 0), tz)
+        return start, end
+
+    if t < time(8, 0):    # 00:00–07:59
+        prev = d - timedelta(days=1)
+        start = datetime.combine(prev, time(20, 0), tz)
+        end   = datetime.combine(prev, time(21, 0), tz)
+        return start, end
+
+    if t < time(9, 0):    # 08:00–08:59
+        start = datetime.combine(d, time(7, 0), tz)
+        end   = datetime.combine(d, time(8, 0), tz)
+        return start, end
+
+    # 09:00–22:59 — шлём ровно за 2 часа, с запасом 10 минут
+    start = (local_dt - timedelta(hours=2)).replace(second=0, microsecond=0)
+    end   = start + timedelta(minutes=10)
+    return start, end   
+def day_window_for(scheduled_at: datetime, tz: timezone = MOSCOW_TZ):
+    """
+    Окно для суточного напоминания: [09:00;10:00) за сутки до приёма.
+    """
+    appt_local = (scheduled_at if scheduled_at.tzinfo else scheduled_at.replace(tzinfo=tz)).astimezone(tz)
+    start = datetime.combine(appt_local.date() - timedelta(days=1), time(9, 0), tz)
+    end   = datetime.combine(appt_local.date() - timedelta(days=1), time(10, 0), tz)
+    return start, end
 
 def get_last_processed_time():
     tz_msk = timezone(timedelta(hours=3))
@@ -126,7 +171,7 @@ def save_last_processed_time():
         with open(LAST_PROCESSED_FILE, 'w') as f:
             json.dump({'last_processed': now.isoformat()}, f)
             pending_messages = db.query(SendedMessage).filter(
-            SendedMessage.type.in_(["pending", "pending_day"])
+            SendedMessage.type.in_(["pending"])
             ).all()
         processed_count = 0
         notified_phones = set()
@@ -156,12 +201,13 @@ def save_last_processed_time():
                         SendedMessage.type.in_(["new_remind", "day_remind", "hour_remind"])
                     ).all()
                 ]
-                # === Обработка pending (обычные) → hour_remind ===
-                if msg.type == "pending" and 90 <= minutes_to_appointment <= 120 and "hour_remind" not in sent_types and local_hour >= 8  and local_hour < 21:
-                    hour_msg = (    
-                        f"Здравствуйте!\n"
+                # === Обработка pending → hour_remind по новым правилам ===
+                win_start, win_end = two_hour_window_for(scheduled_at, moscow_tz)
+                if msg.type == "pending" and "hour_remind" not in sent_types and win_start <= now < win_end:
+                    hour_msg = (
+                        "Здравствуйте!\n"
                         f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
-                        f"В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
+                        "В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                         f"Телефон для связи {phone_center}."
                     )
                     send_chatwoot_message(phone, hour_msg)
@@ -174,13 +220,15 @@ def save_last_processed_time():
                         appointment_json=msg.appointment_json
                     ))
                     db.commit()
-                    logger.info(f"⏰ Утром отправлено hour_remind из pending: {msg.appointment_id}")
+                    logger.info(f"⏰ Отправлено hour_remind по окну {win_start.strftime('%Y-%m-%d %H:%M')}–{win_end.strftime('%H:%M')}: {msg.appointment_id}")
                     processed_count += 1
-                # === Обработка pending → day_remind ===
-                if msg.type == "pending" and 1400 <= minutes_to_appointment <= 1440 and "day_remind" not in sent_types and local_hour >= 8  and local_hour < 21:
+                    continue
+                # === Обработка pending → day_remind ТОЛЬКО в окне 09:00–10:00 (день-1) ===
+                dw_start, dw_end = day_window_for(scheduled_at, moscow_tz)
+                if msg.type == "pending" and "day_remind" not in sent_types and dw_start <= now < dw_end:
                     day_msg = (
                         f"Здравствуйте!\n"
-                        f"Напоминаем, что вы записаны в Клинику Эксперт на {dt_str}.\n"
+                        f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
                         f"Подтвердите свой визит ответным сообщением (только цифра):\n"
                         f"1 – подтверждаю\n3 – прошу отменить\n"
                         f"Для переноса записи обратитесь к нам по телефону: {phone_center}"
@@ -191,34 +239,15 @@ def save_last_processed_time():
                         type="day_remind",
                         scheduled_at=scheduled_at,
                         phone_number=phone,
-                        phone_center=phone_center
+                        phone_center=phone_center,
+                        appointment_json=msg.appointment_json
                     ))
                     db.commit()
-                    logger.info(f"📆 Утром отправлено day_remind из pending: {msg.appointment_id}")
+                    logger.info(f"📆 Отправлено day_remind в окно 09–10: {msg.appointment_id}")
                     processed_count += 1
                     continue
-                if msg.type == "pending" and now.hour == 20 and msg.send_after:
-                    if 24 * 60 <= minutes_to_appointment <= 24 * 60 + 13 * 60 and "day_remind" not in sent_types:
-                        day_msg = (
-                            f"Здравствуйте!\n"
-                            f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
-                            f"Подтвердите свой визит ответным сообщением (только цифра):\n"
-                            f"1 – подтверждаю\n3 – прошу отменить\n"
-                            f"Для переноса записи обратитесь к нам по телефону: {phone_center}"
-                        )
-                        send_chatwoot_message(phone, day_msg)
-                        db.add(SendedMessage(
-                            appointment_id=msg.appointment_id,
-                            type="day_remind",
-                            scheduled_at=scheduled_at,
-                            phone_number=phone,
-                            phone_center=phone_center,
-                            appointment_json=msg.appointment_json
-                        ))
-                        db.commit()
-                        logger.info(f"🌙 Догнали day_remind (+13ч): {msg.appointment_id}")
 
-                    # 2ч-догон: [120 .. 120+13h]
+                if msg.type == "pending" and now.hour == 20 and msg.send_after:
                     if  2 * 60  <= minutes_to_appointment <=  90 + 13 * 60 and "hour_remind" not in sent_types:
                         hour_msg = (
                             f"Здравствуйте!\n"
@@ -377,7 +406,6 @@ def process_items_cron():
                     logger.info(f"⛔ Пропуск: запись в прошлом ({earliest_time.isoformat() if earliest_time else 'None'})")
                     continue
                 item = earliest_item_obj["item"]
-                print("sdcsds", item)
                 item_id = item.get("id")
                 list_of_apt_in_one_day = grouped_full[phone][datetime.fromisoformat(scheduled_at).date().isoformat()]
                 item_status = item.get("status")
@@ -386,7 +414,7 @@ def process_items_cron():
 
                 appointment_in_db = db.query(SendedMessage).filter(
                     SendedMessage.appointment_id == item_id,
-                    SendedMessage.type.in_(['pending', 'pending_day'])
+                    SendedMessage.type.in_(['pending'])
                 ).first()
 
                 if item_status in skip_statuses:
@@ -400,9 +428,8 @@ def process_items_cron():
                     appointment_in_db.scheduled_at = earliest_time
                     outdated_reminders = db.query(SendedMessage).filter(
                         SendedMessage.appointment_id == item_id,
-                        SendedMessage.type.in_(['new_remind', 'day_remind', 'hour_remind'])
+                        SendedMessage.type.in_(['new_remind', 'day_remind', 'hour_remind', 'pending'])
                     ).all()
-                    print("ggh",appointment_in_db)
                     for reminder in outdated_reminders:
                         db.delete(reminder)
                     db.commit()
@@ -479,28 +506,13 @@ def process_items_cron():
                         phone_number=phone,
                         phone_center=phone_center,
                         appointment_json=list_of_apt_in_one_day,
-                        send_after=True if earliest_time.hour >= 21 or earliest_time.hour < 8 else False
+                        send_after=True if (earliest_time.hour >= 21 or earliest_time.hour < 8 ) or (earliest_time.hour >= 21 or earliest_time.hour < 8 ) else False
                     ))
                     db.commit()
-
                     logger.info(f"🟢 Новая запись отправлена: {item_id}")
                     notified_phones.add(phone)
                     processed_count += 1
                     continue
-                if 1400 <= minutes_to_appointment <= 1440 and 0 <= earliest_time.hour < 7:
-                    logger.info(f"🌙 Ночь: откладываем сообщение (pending_day) для {item_id}")
-                    is_created_type = db.query(SendedMessage).filter_by(
-                        appointment_id=item_id, type="pending_day"
-                    ).first()
-                    if not is_created_type:
-                        db.add(SendedMessage(
-                            appointment_id=item_id,
-                            type="pending_day",
-                            scheduled_at=earliest_time,
-                            phone_number=phone,
-                            phone_center=phone_center
-                        ))
-                        db.commit()
             logger.info(f"✅ Завершено. Уведомлений отправлено: {processed_count}")
 
     except Exception as e:

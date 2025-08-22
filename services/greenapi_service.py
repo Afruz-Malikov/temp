@@ -1,6 +1,7 @@
 import logging
 import httpx
 import os,asyncio
+import json, time, uuid, logging, os
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import re
@@ -18,7 +19,11 @@ load_dotenv()
 
 logger = logging.getLogger("uvicorn.webhook")
 logging.basicConfig(level=logging.INFO)
-
+def _j(obj):  # безопасный json для логов
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return str(obj)
 GREENAPI_ID = os.getenv("GREENAPI_ID")
 OPEN_API_KEY = os.getenv("OPENAI_API_KEY")
 GREENAPI_TOKEN = os.getenv("GREENAPI_TOKEN")
@@ -61,7 +66,7 @@ async def append_to_google_sheet(date_str: str, phone: str, decision: str, clini
         await asyncio.to_thread(_append_row_sync, date_str, phone, decision,clinic_name)
     except Exception as e:
         print(f"⚠️ Не удалось записать в Google Sheets: {e} | {date_str=} {phone=} {decision=}")
-def extract_scheduled_at(message: str) -> str | None:
+def extract_scheduled_at(message ):
     """
     Ищет дату/время визита в тексте и возвращает 'YYYY-MM-DD HH:MM' или None.
     Поддерживаемые варианты:
@@ -480,24 +485,58 @@ async def process_greenapi_webhook(request):
 
     return {"status": "ok"}
 
-async def call_ai_service(messages) -> str:
+async def call_ai_service(messages, why_tag: str = None) -> str:
     """
-    Отправляет messages в OpenAI и возвращает ответ.
+    Логирует входящие сообщения и метаданные ответа, чтобы понять
+    почему модель дала такой ответ.
     """
     if not OPEN_API_KEY:
         return "[Ошибка: не задан OPEN_API_KEY]"
+
+    trace = why_tag or uuid.uuid4().hex[:8]
     client = openai.AsyncOpenAI(api_key=OPEN_API_KEY)
+
+    # 1) Логируем ВХОД (весь стек сообщений + параметры)
+    params = dict(model="gpt-4.1-nano", temperature=0.7, max_tokens=512)
+    logger.info("[GPT %s] INPUT params=%s", trace, _j(params))
+    logger.info("[GPT %s] INPUT messages=%s", trace, _j(messages))
+
+    t0 = time.perf_counter()
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4.1-nano",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=512
+        resp = await client.chat.completions.create(messages=messages, **params)
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+
+        choice = resp.choices[0]
+        content = (choice.message.content or "").strip()
+
+        # 2) Логируем ВЫХОД (ключевое для «почему так ответил»)
+        logger.info(
+            "[GPT %s] OUTPUT id=%s model=%s finish_reason=%s latency_ms=%d",
+            trace, getattr(resp, "id", None), getattr(resp, "model", None),
+            getattr(choice, "finish_reason", None), dt_ms
         )
-        return response.choices[0].message.content.strip()
+
+        # usage (сколько токенов модель реально «видела» и сгенерила)
+        usage = None
+        try:
+            usage = resp.usage.model_dump() if hasattr(resp.usage, "model_dump") else dict(resp.usage)
+        except Exception:
+            usage = str(getattr(resp, "usage", None))
+        logger.info("[GPT %s] USAGE=%s", trace, _j(usage))
+
+        # полезно видеть tool_calls/функции, если они влияали на ответ
+        tool_calls = getattr(choice.message, "tool_calls", None)
+        if tool_calls:
+            logger.info("[GPT %s] TOOL_CALLS=%s", trace, _j(tool_calls))
+
+        # И сам текст ответа целиком (для разбора причин)
+        logger.info("[GPT %s] OUTPUT content=%s", trace, _j(content))
+        return content
+
     except Exception as e:
-        logger.exception("Ошибка OpenAI: %s", e)
-        return f"[Ошибка OpenAI: {e}]" 
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        logger.exception("[GPT %s] ERROR after %dms: %s", trace, dt_ms, e)
+        return f"[Ошибка OpenAI: {e}]"
 async def unassign_conversation(phone):
     async with httpx.AsyncClient() as client:
         # Найти контакт
