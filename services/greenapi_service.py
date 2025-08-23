@@ -550,7 +550,6 @@ async def process_greenapi_webhook(request):
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
             )
             msg_resp.raise_for_status()
-
             # --- AI обработка ---
             greenapi_history = get_greenapi_chat_history(sender_chat_id)
             system_prompt = fetch_google_doc_text() or "You are a helpful assistant."
