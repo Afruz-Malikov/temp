@@ -109,7 +109,7 @@ def cw_list_labels(client) -> list[dict]:
     data = r.json()
     labels = data.get("payload", [])
     return labels 
-def pick_label(existing_labels: list[dict], wanted_name: str) -> str | None:
+def pick_label(existing_labels: list[dict], wanted_name: str):
     """
     Возвращает точное имя ярлыка из существующих (если есть), иначе None.
     Chatwoot в ответе может прислать ключ 'title' или 'name' — поддержим оба.
@@ -121,7 +121,7 @@ def pick_label(existing_labels: list[dict], wanted_name: str) -> str | None:
     return None
 
 # === 2) обновлённая send_chatwoot_message ====================================
-def send_chatwoot_message(phone: str, message: str, action: Optional[str] = None, assignee_id: int = 3):
+def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_id: int = 3):
     """
     phone   — номер БЕЗ '+'
     action  — None | 'confirm' | 'cancel' | 'info' | 'info_2' | 'price_cons' | 'desc_cons' | 'broken_time' | 'tax_cert'
