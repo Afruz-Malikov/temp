@@ -1,6 +1,7 @@
 import logging
 import httpx
 import os,asyncio
+import json, time, uuid, logging, os
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 import re
@@ -18,7 +19,11 @@ load_dotenv()
 
 logger = logging.getLogger("uvicorn.webhook")
 logging.basicConfig(level=logging.INFO)
-
+def _j(obj):  # безопасный json для логов
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return str(obj)
 GREENAPI_ID = os.getenv("GREENAPI_ID")
 OPEN_API_KEY = os.getenv("OPENAI_API_KEY")
 GREENAPI_TOKEN = os.getenv("GREENAPI_TOKEN")
@@ -34,7 +39,7 @@ CITY_IDS = [
     "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b",
     "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f"
 ]
-APPOINTMENTS_API_URL_V3 = "https://apitest.mrtexpert.ru/api/v3/appointments"
+APPOINTMENTS_API_URL_V3 = "https://api.mrtexpert.ru/api/v3/appointments"
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 def _get_sheets_service():
     if not GOOGLE_SA_FILE:
@@ -61,29 +66,95 @@ async def append_to_google_sheet(date_str: str, phone: str, decision: str, clini
         await asyncio.to_thread(_append_row_sync, date_str, phone, decision,clinic_name)
     except Exception as e:
         print(f"⚠️ Не удалось записать в Google Sheets: {e} | {date_str=} {phone=} {decision=}")
-def extract_scheduled_at(message: str) -> str:
+def extract_scheduled_at(message ):
     """
-    Извлекает дату и время appointment из текста уведомления.
-    Возвращает строку в формате 'YYYY-MM-DD HH:MM' или None, если не найдено.
+    Ищет дату/время визита в тексте и возвращает 'YYYY-MM-DD HH:MM' или None.
+    Поддерживаемые варианты:
+      - 'на 2025-08-20 14:00'
+      - 'на 20.08.2025 в 14:00' (также 20-08-2025 / 20/08/2025)
+      - 'на 20.08 в 14:00'  (год подставим текущий)
+      - 'на 20 августа 2025 в 14:00' / 'на 20 августа в 14:00'
+      - 'сегодня в 14:00' / 'завтра в 09:30'
+      - время может быть '14:00' или '14.00'
     """
     import re
-    from datetime import datetime, date
+    from datetime import datetime, date, timedelta
 
-    # 1. Поиск формата "на YYYY-MM-DD HH:MM"
-    match = re.search(r"на (\d{4}-\d{2}-\d{2} \d{2}:\d{2})", message)
-    if match:
-        return match.group(1)
-    # 2. Поиск формата "на DD.MM.YYYY в HH:MM"
-    match = re.search(r"на (\d{2}\.\d{2}\.\d{4}) в (\d{2}:\d{2})", message)
-    if match:
-        # Преобразуем в ISO формат
-        dt = datetime.strptime(f"{match.group(1)} {match.group(2)}", "%d.%m.%Y %H:%M")
+    MONTHS_RU = {
+        "январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5,    # май/мая
+        "июн": 6, "июл": 7, "август": 8, "сентябр": 9,
+        "октябр": 10, "ноябр": 11, "декабр": 12,
+    }
+
+    def clean(s: str) -> str:
+        s = re.sub(r"[–—−]+", "-", s)     # все длинные дефисы -> '-'
+        s = re.sub(r"\s+", " ", s)        # схлопываем пробелы
+        return s.strip()
+
+    text = clean(message)
+
+    # Попробуем анализировать часть после "на ...", т.к. обычно сразу там дата/время
+    m_after = re.search(r"\bна\b(.+)", text, flags=re.IGNORECASE)
+    scope = m_after.group(1).strip() if m_after else text
+
+    now = datetime.now()
+    this_year = now.year
+
+    def build_and_return(y: int, m: int, d: int, hh: int, mm: int) -> str | None:
+        try:
+            dt = datetime(y, m, d, hh, mm)
+        except ValueError:
+            return None
         return dt.strftime("%Y-%m-%d %H:%M")
-    # 3. Поиск "сегодня в HH:MM"
-    match = re.search(r"сегодня в (\d{2}:\d{2})", message)
-    if match:
-        today = date.today().strftime("%Y-%m-%d")
-        return f"{today} {match.group(1)}"
+
+    # 0) 'сегодня/завтра в HH:MM'
+    m = re.search(r"\b(сегодня|завтра)\b\s*(?:в\s*)?(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)", text, re.IGNORECASE)
+    if m:
+        base_date = date.today() + (timedelta(days=1) if m.group(1).lower() == "завтра" else timedelta(days=0))
+        return build_and_return(base_date.year, base_date.month, base_date.day, int(m.group("h")), int(m.group("min")))
+
+    # 1) ISO-подобный: 'YYYY-MM-DD HH:MM' (или с . / /)
+    m = re.search(
+        r"(?P<y>\d{4})[.\-\/](?P<mo>0?[1-9]|1[0-2])[.\-\/](?P<d>0?[1-9]|[12]\d|3[01])\s+(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)",
+        scope
+    )
+    if m:
+        return build_and_return(int(m.group("y")), int(m.group("mo")), int(m.group("d")), int(m.group("h")), int(m.group("min")))
+
+    # 2) Числовая дата с годом + время: 'DD.MM.YYYY в HH:MM' (точки/дефисы/слеши)
+    m = re.search(
+        r"(?P<d>0?[1-9]|[12]\d|3[01])[.\-\/](?P<mo>0?[1-9]|1[0-2])[.\-\/](?P<y>\d{4}).{0,20}?(?:в\s*)?(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)",
+        scope, re.IGNORECASE
+    )
+    if m:
+        return build_and_return(int(m.group("y")), int(m.group("mo")), int(m.group("d")), int(m.group("h")), int(m.group("min")))
+
+    # 3) Текстовая дата (+/- год) + время: '20 августа (2025) в 14:00'
+    m = re.search(
+        r"(?P<d>0?[1-9]|[12]\d|3[01])\s+"
+        r"(?P<mon>январ[ья]|феврал[ья]|март[а]?|апрел[ья]|ма[йя]|июн[ья]|июл[ья]|август[а]?|сентябр[ья]|октябр[ья]|ноябр[ья]|декабр[ья])"
+        r"(?:\s+(?P<y>\d{4}))?.{0,20}?(?:в\s*)?(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)",
+        scope, re.IGNORECASE
+    )
+    if m:
+        mon_raw = m.group("mon").lower()
+        month = None
+        for key, val in MONTHS_RU.items():
+            if mon_raw.startswith(key):
+                month = val
+                break
+        if month:
+            year = int(m.group("y")) if m.group("y") else this_year
+            return build_and_return(year, month, int(m.group("d")), int(m.group("h")), int(m.group("min")))
+
+    # 4) Числовая дата без года + время: 'DD.MM в HH:MM' -> подставим текущий год
+    m = re.search(
+        r"(?P<d>0?[1-9]|[12]\d|3[01])[.\-\/](?P<mo>0?[1-9]|1[0-2]).{0,20}?(?:в\s*)?(?P<h>[01]?\d|2[0-3])[:.](?P<min>[0-5]\d)",
+        scope, re.IGNORECASE
+    )
+    if m:
+        return build_and_return(this_year, int(m.group("mo")), int(m.group("d")), int(m.group("h")), int(m.group("min")))
+
     return None
 
 def normalize_dt(dt_str):
@@ -133,7 +204,7 @@ async def change_appointment_by_message(message: str, phone_number: str, status:
         if not record:
             print(f"❌ Не найдено уведомление с телефоном {phone_number} и временем {scheduled_at}")
             return
-        
+        await append_to_google_sheet(scheduled_at_str, phone_number, status, "Липецк 1 МРТ-Эксперт")
         appts_list = record.appointment_json or []
         if not isinstance(appts_list, list) or not appts_list:
             print("❌ В записи нет валидного appointment_json (ожидался список)")
@@ -146,7 +217,6 @@ async def change_appointment_by_message(message: str, phone_number: str, status:
                     print("⚠️ Пропуск: у одного из объектов нет id")
                     continue
                 clinic_id = (appt.get("clinic") or {}).get("id")
-                await append_to_google_sheet(scheduled_at_str, phone_number, status, (appt.get("clinic") or {}).get('name', ''))
                 patient = appt.get("patient", {}) or {}
                 patch_patient = {
                     "firstname": patient.get("firstname", ""),
@@ -224,6 +294,86 @@ def get_greenapi_chat_history(chat_id, count=18):
         return []
 
 async def process_greenapi_webhook(request):
+    logger = logging.getLogger("uvicorn.webhook")
+
+    # ======================== Labels & detection ========================
+    ACTION_TO_LABEL = {
+        "confirm":       "подтвердил_запись",
+        "cancel":        "отмена",
+        "desc_cons":     "консультация_по_описанию",
+        "price_cons":    "консультация_по_стоимости_и_записи",
+        "broken_time":   "нарушен_срок_описания",
+        "tax_cert":      "справка_в_налоговую",
+    }
+
+    def detect_action_from_ai_reply(ai_reply: str) -> str | None:
+        """Определяет action по точным формулировкам из таблицы (только для текстовых ответов)."""
+        if not ai_reply:
+            return None
+        import re as _re
+
+        def _norm(s: str) -> str:
+            s = s.replace(" ", " ")
+            s = _re.sub(r"\s+", " ", s.strip())
+            return s.lower()
+
+        t = _norm(ai_reply)
+
+        # Главное меню
+        if t.startswith(_norm("Пока в чате мы информируем по уже оформленным записям.")):
+            return "price_cons"
+        if t.startswith(_norm("Налоговый вычет возвращается не ранее года, следующего за годом оплаты.")):
+            return "tax_cert"
+        # Вложенные ответы
+        if t.startswith(_norm("В поле «Фамилия» введите фамилию пациента, указанную в договоре (без инициалов, пробелов и опечаток).")):
+            return "desc_cons"
+        if t.startswith(_norm("Важно:")) or "telemedex" in t:
+            return "desc_cons"
+
+        # Просрочка описания (на случай текстовой формы)
+        if "приносим извинение за увеличение сроков описания" in t:
+            return "broken_time"
+        return None
+
+    # ======================== Chatwoot helpers ========================
+    async def _cw_list_labels(client) -> list[dict]:
+        r = await client.get(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/labels",
+            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+        )
+        r.raise_for_status()
+        data = r.json()
+        return (data.get("payload") or data.get("data") or data) if isinstance(data, (list, dict)) else []
+
+    def _pick_label(existing_labels: list[dict], wanted_name: str) -> str | None:
+        if not wanted_name:
+            return None
+        wn = wanted_name.strip().lower().replace(" ", "_")
+        for it in existing_labels:
+            name = (it.get("title") or it.get("name") or "").strip()
+            if name.lower().replace(" ", "_") == wn:
+                return name
+        return None
+
+    async def _cw_add_labels(client, conversation_id: int, labels: list[str]):
+        if not labels:
+            return
+        r = await client.post(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/labels",
+            json={"labels": labels},
+            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+        )
+        r.raise_for_status()
+
+    async def _cw_resolve(client, conversation_id: int):
+        r = await client.post(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_status",
+            json={"status": "resolved"},
+            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+        )
+        r.raise_for_status()
+
+    # ======================== Existing utils (unchanged behavior) ========================
     def _parse_ai_control(ai_reply: str):
         """
         Пытается распарсить управляющий JSON:
@@ -243,11 +393,60 @@ async def process_greenapi_webhook(request):
             return None
         return None
 
+    def _extract_phone(text):
+        """
+        Достаёт номер телефона из текста напоминания, например:
+        'Для переноса записи обратитесь к нам по телефону: 84742505105'
+        Возвращает нормализованный номер (только цифры и ведущий '+').
+        """
+        if not text:
+            return None
+
+        m = re.search(r'(?:по\s+телефону|телефон)[^0-9+]*[:\-]?\s*([+()\-\s\d]{7,})', text, flags=re.IGNORECASE)
+        cand = m.group(1).strip() if m else None
+
+        if not cand:
+            m2 = re.findall(r'(\+?\d[\d\-\s()]{6,}\d)', text)
+            if m2:
+                cand = m2[-1].strip()
+
+        if not cand:
+            return None
+
+        num = re.sub(r'[^\d+]', '', cand)
+        if num.count('+') > 1:
+            num = '+' + num.replace('+', '')
+        return num or None
+
+    def _find_last_phone_in_history(greenapi_history):
+        """
+        Ищем телефон в последнем исходящем (outgoing) сообщении — там лежит шаблон уведомления.
+        """
+        for h in reversed(greenapi_history or []):
+            if h.get("type") == "outgoing":
+                txt = h.get("textMessage") or h.get("text") or ""
+                ph = _extract_phone(txt)
+                if ph:
+                    return ph
+        return None
+
+    def _is_valid_ai_reply(reply: str) -> bool:
+        """
+        Проверяет, что ответ GPT не пустой/мусорный.
+        """
+        if not reply:
+            return False
+        text = reply.strip()
+        if not text:
+            return False
+        if text in ("{}", "[]"):
+            return False
+        return True
+
+    # ======================== Main flow ========================
     body = await request.json()
-    logger.info("Получен вебхук: %s", body)
 
     if body.get("typeWebhook") != "incomingMessageReceived":
-        logger.info("Пропущен вебхук не того типа")
         return {"status": "ignored"}
 
     message = ""
@@ -274,18 +473,21 @@ async def process_greenapi_webhook(request):
     try:
         async with httpx.AsyncClient() as client:
             # --- Контакт в Chatwoot ---
-            contacts = await get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
+            contacts = await get_all_chatwoot_contacts(
+                client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY
+            )
             contact = next((c for c in contacts if c.get("phone_number") == formatted_phone), None)
 
             if not contact:
-                logger.info({"name": sender_name, "phone_number": formatted_phone})
                 contact_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
                     json={"name": "afruz" or sender_name, "phone_number": formatted_phone},
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
                 )
                 if contact_resp.status_code == 422 and "Phone number has already been taken" in contact_resp.text:
-                    contacts = await get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
+                    contacts = await get_all_chatwoot_contacts(
+                        client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY
+                    )
                     contact = next((c for c in contacts if c.get("phone_number") == formatted_phone), None)
                     if contact:
                         contact_id = contact["id"]
@@ -294,7 +496,6 @@ async def process_greenapi_webhook(request):
                 else:
                     contact_resp.raise_for_status()
                     contact_json = contact_resp.json()
-                    logger.info("Создан контакт: %s", contact_json)
                     contact_id = (
                         contact_json.get("id")
                         or contact_json.get("payload", {}).get("contact", {}).get("id")
@@ -330,13 +531,12 @@ async def process_greenapi_webhook(request):
                 )
                 conv_resp.raise_for_status()
                 new_conv = conv_resp.json()
-                logger.info("Создан новый разговор: %s", new_conv)
                 conversation_id = new_conv.get("id")
                 if not conversation_id:
                     logger.warning("Не удалось получить ID созданного разговора.")
                     return {"status": "error", "detail": "no conversation id"}
 
-            # Назначить оператора 3
+            # Назначить оператора 3 (для существующего диалога тоже)
             await client.patch(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
                 json={"assignee_id": 3},
@@ -350,10 +550,7 @@ async def process_greenapi_webhook(request):
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
             )
             msg_resp.raise_for_status()
-            logger.info("Добавлено входящее сообщение в разговор %s", conversation_id)
-
             # --- AI обработка ---
-            # История из GreenAPI для контекста
             greenapi_history = get_greenapi_chat_history(sender_chat_id)
             system_prompt = fetch_google_doc_text() or "You are a helpful assistant."
             gpt_messages = [{"role": "system", "content": system_prompt}]
@@ -362,13 +559,25 @@ async def process_greenapi_webhook(request):
                     gpt_messages.append({"role": "user", "content": msg.get("textMessage", "")})
                 elif msg.get("type") == "outgoing":
                     gpt_messages.append({"role": "assistant", "content": msg.get("textMessage", "")})
-            if not any(m.get("content") == message for m in gpt_messages if m["role"] == "user"):
+            if not gpt_messages or gpt_messages[-1].get("role") != "user" or gpt_messages[-1].get("content") != message:
                 gpt_messages.append({"role": "user", "content": message})
+
 
             ai_reply = await call_ai_service(gpt_messages)
             logger.debug(f"AI reply raw: {ai_reply!r}")
 
+            if not _is_valid_ai_reply(ai_reply):
+                logger.info("Игнорируем пустой/некорректный ответ от GPT")
+                return {"status": "ok"}
+
             ctrl = _parse_ai_control(ai_reply)
+
+            # телефон центра: из последнего исходящего напоминания; fallback — из текста
+            phone_center = (
+                _find_last_phone_in_history(greenapi_history)
+                or _extract_phone(ai_reply)
+                or _extract_phone(message)
+            )
 
             # --- Управляющие команды от ИИ ---
             if ctrl and ctrl.get("type") == "operator_connect":
@@ -382,37 +591,69 @@ async def process_greenapi_webhook(request):
                 await unassign_conversation(phone)
                 return {"status": "ok"}
 
-            if ctrl and ctrl.get("type") == "confirm":
-                thank_you_msg = "Спасибо за подтверждение записи. Ждём вас за 15 минут до приёма."
-                ai_msg_resp = await client.post(
+            if ctrl and ctrl.get("type") in ("confirm", "cancel"):
+                # 1) финальный текст
+                if ctrl["type"] == "confirm":
+                    out = (
+                        "Спасибо за подтверждение записи.\n"
+                        "Ждем вас за 15 минут до начала приема со всеми необходимыми документами.\n"
+                    )
+                    if phone_center:
+                        out += f"\nЕсли у вас изменятся планы, пожалуйста, свяжитесь с нами по телефону {phone_center}"
+                else:
+                    out = "Благодарим за обратную связь!\n"
+                    if phone_center:
+                        out += f"Вы в любой момент можете восстановить Вашу запись по телефону {phone_center}"
+
+                r = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                    json={"content": thank_you_msg, "message_type": "outgoing"},
+                    json={"content": out, "message_type": "outgoing"},
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
                 )
-                ai_msg_resp.raise_for_status()
-                await change_appointment_by_message(ctrl.get("message", ""), phone, "confirm")
-                return {"status": "ok"}
+                r.raise_for_status()
 
-            if ctrl and ctrl.get("type") == "cancel":
-                cancel_msg = "Вашу запись отменяем. Если потребуется новая запись, напишите нам или позвоните."
-                ai_msg_resp = await client.post(
-                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                    json={"content": cancel_msg, "message_type": "outgoing"},
-                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+                # 2) ярлык + закрытие
+                try:
+                    wanted_label = ACTION_TO_LABEL.get(ctrl["type"])
+                    existing = await _cw_list_labels(client)
+                    label_to_use = _pick_label(existing, wanted_label)
+                    if label_to_use:
+                        await _cw_add_labels(client, conversation_id, [label_to_use])
+                    else:
+                        logger.warning(f"Ярлык '{wanted_label}' не найден среди категорий — пропускаю навешивание")
+                    await _cw_resolve(client, conversation_id)
+                except Exception as lab_e:
+                    logger.warning(f"Не удалось навесить ярлык/закрыть разговор: {lab_e}")
+
+                # 3) доменная логика
+                await change_appointment_by_message(
+                    ctrl.get("message", ""), phone,
+                    "confirm" if ctrl["type"] == "confirm" else "canceled"
                 )
-                ai_msg_resp.raise_for_status()
-                await change_appointment_by_message(ctrl.get("message", ""), phone, "canceled")
                 return {"status": "ok"}
 
-            # --- Обычный текстовый ответ ИИ ---
+            # --- Обычный текстовый ответ ИИ (меню) ---
             if ai_reply and not ctrl:
                 ai_msg_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
-                    json={"content": ai_reply, "message_type": "outgoing"},
+                    json={"content": ai_reply.strip(), "message_type": "outgoing"},
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
                 )
                 ai_msg_resp.raise_for_status()
                 logger.info("AI ответ отправлен в разговор %s", conversation_id)
+
+                # навешиваем ярлык в зависимости от текста
+                try:
+                    action = detect_action_from_ai_reply(ai_reply)
+                    if action:
+                        existing = await _cw_list_labels(client)
+                        wanted_label = ACTION_TO_LABEL.get(action)
+                        label_to_use = _pick_label(existing, wanted_label)
+                        if label_to_use:
+                            await _cw_add_labels(client, conversation_id, [label_to_use])
+                            logger.info(f"Навешен ярлык '{label_to_use}' для action '{action}'")
+                except Exception as lab_e:
+                    logger.warning(f"Не удалось навесить ярлык по тексту: {lab_e}")
 
     except Exception as e:
         logger.exception("Ошибка: %s", e)
@@ -420,25 +661,58 @@ async def process_greenapi_webhook(request):
 
     return {"status": "ok"}
 
-async def call_ai_service(messages) -> str:
+async def call_ai_service(messages, why_tag: str = None) -> str:
     """
-    Отправляет messages в OpenAI и возвращает ответ.
+    Логирует входящие сообщения и метаданные ответа, чтобы понять
+    почему модель дала такой ответ.
     """
     if not OPEN_API_KEY:
         return "[Ошибка: не задан OPEN_API_KEY]"
-    client = openai.AsyncOpenAI(api_key=OPEN_API_KEY)
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=512
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.exception("Ошибка OpenAI: %s", e)
-        return f"[Ошибка OpenAI: {e}]" 
 
+    trace = why_tag or uuid.uuid4().hex[:8]
+    client = openai.AsyncOpenAI(api_key=OPEN_API_KEY)
+
+    # 1) Логируем ВХОД (весь стек сообщений + параметры)
+    params = dict(model="gpt-4.1-nano", temperature=0.7, max_tokens=512)
+    logger.info("[GPT %s] INPUT params=%s", trace, _j(params))
+    logger.info("[GPT %s] INPUT messages=%s", trace, _j(messages))
+
+    t0 = time.perf_counter()
+    try:
+        resp = await client.chat.completions.create(messages=messages, **params)
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+
+        choice = resp.choices[0]
+        content = (choice.message.content or "").strip()
+
+        # 2) Логируем ВЫХОД (ключевое для «почему так ответил»)
+        logger.info(
+            "[GPT %s] OUTPUT id=%s model=%s finish_reason=%s latency_ms=%d",
+            trace, getattr(resp, "id", None), getattr(resp, "model", None),
+            getattr(choice, "finish_reason", None), dt_ms
+        )
+
+        # usage (сколько токенов модель реально «видела» и сгенерила)
+        usage = None
+        try:
+            usage = resp.usage.model_dump() if hasattr(resp.usage, "model_dump") else dict(resp.usage)
+        except Exception:
+            usage = str(getattr(resp, "usage", None))
+        logger.info("[GPT %s] USAGE=%s", trace, _j(usage))
+
+        # полезно видеть tool_calls/функции, если они влияали на ответ
+        tool_calls = getattr(choice.message, "tool_calls", None)
+        if tool_calls:
+            logger.info("[GPT %s] TOOL_CALLS=%s", trace, _j(tool_calls))
+
+        # И сам текст ответа целиком (для разбора причин)
+        logger.info("[GPT %s] OUTPUT content=%s", trace, _j(content))
+        return content
+
+    except Exception as e:
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        logger.exception("[GPT %s] ERROR after %dms: %s", trace, dt_ms, e)
+        return f"[Ошибка OpenAI: {e}]"
 async def unassign_conversation(phone):
     async with httpx.AsyncClient() as client:
         # Найти контакт
@@ -471,7 +745,7 @@ def fetch_google_doc_text():
     """
     Получить текст Google Docs по захардкоженному doc_id и GOOGLE_API_DOCS_SECRET
     """
-    doc_id = "1aREZDEdWBRt0N9Fxree5sZww9v47xhlXo5ZfJEK_Hac"
+    doc_id = "1dQ2k6i_c8JpByTtPy75Vr0ErohIz-e73K7hvj86R2Go"
     try:
         SCOPES = ['https://www.googleapis.com/auth/documents.readonly']
         credentials = service_account.Credentials.from_service_account_file('credentials.json', scopes=SCOPES)

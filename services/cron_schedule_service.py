@@ -1,8 +1,9 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone,time  
 import httpx
 import os
 import json
+from typing import Optional
 from db import SessionLocal
 from models.sended_message import SendedMessage
 from pathlib import Path
@@ -20,6 +21,51 @@ GOOGLE_API_DOCS_SECRET = os.getenv("GOOGLE_API_DOCS_SECRET")
 APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY") or 'ENByZZnh5rvXfxHd8LeqrhVA'
 
 LAST_PROCESSED_FILE = Path("last_processed.json")
+
+MOSCOW_TZ = timezone(timedelta(hours=3))  
+def two_hour_window_for(scheduled_at: datetime, tz: timezone = MOSCOW_TZ):
+    """
+    Возвращает (start,end) окна отправки 2-часового напоминания.
+    Окна:
+      23:00–23:59  -> 20:00 (сегодня)
+      00:00–07:59  -> 20:00 (вчера)
+      08:00–08:59  -> 07:00 (сегодня)
+      09:00–22:59  -> за 2 часа (окно 10 минут)
+    """
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=tz)
+    local_dt = scheduled_at.astimezone(tz)
+    t = local_dt.time()
+    d = local_dt.date()
+
+    if t >= time(23, 0):  # 23:00–23:59
+        start = datetime.combine(d, time(20, 0), tz)
+        end   = datetime.combine(d, time(21, 0), tz)
+        return start, end
+
+    if t < time(8, 0):    # 00:00–07:59
+        prev = d - timedelta(days=1)
+        start = datetime.combine(prev, time(20, 0), tz)
+        end   = datetime.combine(prev, time(21, 0), tz)
+        return start, end
+
+    if t < time(9, 0):    # 08:00–08:59
+        start = datetime.combine(d, time(7, 0), tz)
+        end   = datetime.combine(d, time(8, 0), tz)
+        return start, end
+
+    # 09:00–22:59 — шлём ровно за 2 часа, с запасом 10 минут
+    start = (local_dt - timedelta(hours=2)).replace(second=0, microsecond=0)
+    end   = start + timedelta(minutes=10)
+    return start, end   
+def day_window_for(scheduled_at: datetime, tz: timezone = MOSCOW_TZ):
+    """
+    Окно для суточного напоминания: [09:00;10:00) за сутки до приёма.
+    """
+    appt_local = (scheduled_at if scheduled_at.tzinfo else scheduled_at.replace(tzinfo=tz)).astimezone(tz)
+    start = datetime.combine(appt_local.date() - timedelta(days=1), time(9, 0), tz)
+    end   = datetime.combine(appt_local.date() - timedelta(days=1), time(10, 0), tz)
+    return start, end
 
 def get_last_processed_time():
     tz_msk = timezone(timedelta(hours=3))
@@ -48,65 +94,136 @@ def get_all_chatwoot_contacts(client, base_url, account_id, api_key):
         page += 1
     return contacts
 
-def send_chatwoot_message(phone, message):
+# === 1) helpers ===============================================================
+def cw_list_labels(client) -> list[dict]:
+    """
+    Возвращает список ярлыков аккаунта Chatwoot.
+    Эндпоинт: GET /api/v1/accounts/{ACCOUNT_ID}/labels
+    """
+    r = client.get(
+        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/labels",
+        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
+        timeout=10
+    )
+    r.raise_for_status()
+    data = r.json()
+    labels = data.get("payload", [])
+    return labels 
+def pick_label(existing_labels: list[dict], wanted_name: str) -> str | None:
+    """
+    Возвращает точное имя ярлыка из существующих (если есть), иначе None.
+    Chatwoot в ответе может прислать ключ 'title' или 'name' — поддержим оба.
+    """
+    for it in existing_labels:
+        name = it.get("title") or it.get("name")
+        if name == wanted_name:
+            return name
+    return None
+
+# === 2) обновлённая send_chatwoot_message ====================================
+def send_chatwoot_message(phone: str, message: str, action: Optional[str] = None, assignee_id: int = 3):
+    """
+    phone   — номер БЕЗ '+'
+    action  — None | 'confirm' | 'cancel' | 'info' | 'info_2' | 'price_cons' | 'desc_cons' | 'broken_time' | 'tax_cert'
+    """
+    ACTION_TO_LABEL = {
+    "confirm":       "подтвердил_запись",
+    "cancel":        "отмена",
+    "info":          "информирование",
+    "info_2":        "информирование_2",
+    "desc_cons":     "консультация_по_описанию",
+    "price_cons":    "консультация_по_стоимости_и_записи",
+    "broken_time":   "нарушен_срок_описания",
+    "tax_cert":      "справка_в_налоговую",
+}
+
+
     try:
-        with httpx.Client() as client:
+        with httpx.Client(timeout=10.0) as client:
+            # 1) контакт
             contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
-            contact = next((c for c in contacts if c["phone_number"] == f'+{phone}'), None)
+            contact = next((c for c in contacts if c.get("phone_number") == f"+{phone}"), None)
             if not contact:
-                contact_resp = client.post(
+                r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
                     json={"name": f"+{phone}", "phone_number": f"+{phone}"},
-                    headers={"api_access_token": CHATWOOT_API_KEY,"Content-Type": "application/json"}, timeout=10
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                 )
-                contact_resp.raise_for_status()
-                contact_json = contact_resp.json()
-                contact_id = (
-                    contact_json.get("id")
-                    or contact_json.get("payload", {}).get("contact", {}).get("id")
-                    or contact_json.get("contact", {}).get("id")
-                )
+                r.raise_for_status()
+                cj = r.json()
+                contact_id = cj.get("id") or cj.get("payload", {}).get("contact", {}).get("id") or cj.get("contact", {}).get("id")
                 if not contact_id:
-                    logger.error(f"Не удалось получить contact_id из ответа: {contact_resp.text}")
+                    logger.error(f"Не удалось получить contact_id: {cj}")
                     return
             else:
                 contact_id = contact["id"]
-            convs_resp = client.get(
+
+            # 2) беседа (ищем открытую, иначе создаём)
+            r = client.get(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
-                headers={"api_access_token": CHATWOOT_API_KEY,   "Content-Type": "application/json"}, timeout=10
+                headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
             )
-            convs_resp.raise_for_status()
-            conversations = convs_resp.json().get("payload", [])
-            if conversations:
-                conversation_id = conversations[0]["id"]
-                # Назначить оператора 3 на conversation
-                answ = client.patch(
-                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
-                    json={"assignee_id": 3},
-                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}, timeout=10  
-                )
-                print("answ",answ)
+            r.raise_for_status()
+            conversations = (r.json().get("payload") or r.json().get("data") or [])
+            open_conv = next((c for c in conversations if c.get("status") == "open"), None)
+
+            if open_conv:
+                conversation_id = open_conv["id"]
+                if assignee_id:
+                    client.patch(
+                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
+                        json={"assignee_id": assignee_id},
+                        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
+                    )
             else:
-                conv_resp = client.post(
+                r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
                     json={
                         "inbox_id": int(CHATWOOT_INBOX_ID),
                         "contact_id": contact_id,
-                        "source_id": f"{phone.replace('+', '')}@c.us",
-                        "additional_attributes": {},
-                        "status": "open"
+                        "source_id": f"{phone}@c.us",
+                        "status": "open",
+                        "assignee_id": assignee_id or None,
                     },
-                    headers={"api_access_token": CHATWOOT_API_KEY}, timeout=10
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                 )
-                conv_resp.raise_for_status()
-                conversation_id = conv_resp.json().get("id")
-            msg_resp = client.post(
+                r.raise_for_status()
+                cj = r.json()
+                conversation_id = cj.get("id") or cj.get("payload", {}).get("id") or cj.get("conversation", {}).get("id")
+
+            # 3) сообщение
+            r = client.post(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                 json={"content": message, "message_type": "outgoing"},
-                headers={"api_access_token": CHATWOOT_API_KEY,  "Content-Type": "application/json"}, timeout=10
+                headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
             )
-            msg_resp.raise_for_status()
-            logger.info(f"Chatwoot ответ: {msg_resp.text}")
+            r.raise_for_status()
+
+            # 4) если нужно — подобрать ЯРЛЫК из АКТУАЛЬНОГО списка и закрыть
+            if action in ACTION_TO_LABEL:
+                wanted = ACTION_TO_LABEL[action]
+                existing = cw_list_labels(client)              # <-- тянем актуальные категории
+                label_to_use = pick_label(existing, wanted)    # <-- берём нужный по имени
+                if label_to_use:
+                    r = client.post(
+                        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/labels",
+                        json={"labels": [label_to_use]},
+                        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
+                    )
+                    r.raise_for_status()
+                else:
+                    logger.warning(f"Ярлык '{wanted}' не найден среди категорий аккаунта — пропускаю навешивание")
+
+                # закрыть диалог
+                r = client.post(
+                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_status",
+                    json={"status": "resolved"},
+                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
+                )
+                r.raise_for_status()
+
+            return conversation_id
+
     except Exception as e:
         logger.error(f"Ошибка отправки в Chatwoot: {e}")
 
@@ -127,7 +244,7 @@ def save_last_processed_time():
         with open(LAST_PROCESSED_FILE, 'w') as f:
             json.dump({'last_processed': now.isoformat()}, f)
             pending_messages = db.query(SendedMessage).filter(
-            SendedMessage.type.in_(["pending", "pending_day"])
+            SendedMessage.type.in_(["pending"])
             ).all()
         processed_count = 0
         notified_phones = set()
@@ -157,12 +274,13 @@ def save_last_processed_time():
                         SendedMessage.type.in_(["new_remind", "day_remind", "hour_remind"])
                     ).all()
                 ]
-                # === Обработка pending (обычные) → hour_remind ===
-                if msg.type == "pending" and 90 <= minutes_to_appointment <= 120 and "hour_remind" not in sent_types and local_hour >= 8  and local_hour < 21:
-                    hour_msg = (    
-                        f"Здравствуйте!\n"
+                # === Обработка pending → hour_remind по новым правилам ===
+                win_start, win_end = two_hour_window_for(scheduled_at, moscow_tz)
+                if msg.type == "pending" and "hour_remind" not in sent_types and win_start <= now < win_end:
+                    hour_msg = (
+                        "Здравствуйте!\n"
                         f"Напоминаем, что ваш прием в МРТ Эксперт сегодня в {time_str}.\n"
-                        f"В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
+                        "В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                         f"Телефон для связи {phone_center}."
                     )
                     send_chatwoot_message(phone, hour_msg)
@@ -175,52 +293,34 @@ def save_last_processed_time():
                         appointment_json=msg.appointment_json
                     ))
                     db.commit()
-                    logger.info(f"⏰ Утром отправлено hour_remind из pending: {msg.appointment_id}")
+                    logger.info(f"⏰ Отправлено hour_remind по окну {win_start.strftime('%Y-%m-%d %H:%M')}–{win_end.strftime('%H:%M')}: {msg.appointment_id}")
                     processed_count += 1
-                # === Обработка pending → day_remind ===
-                if msg.type == "pending" and 1400 <= minutes_to_appointment <= 1440 and "day_remind" not in sent_types and local_hour >= 8  and local_hour < 21:
+                    continue
+                # === Обработка pending → day_remind ТОЛЬКО в окне 09:00–10:00 (день-1) ===
+                dw_start, dw_end = day_window_for(scheduled_at, moscow_tz)
+                if msg.type == "pending" and "day_remind" not in sent_types and dw_start <= now < dw_end:
                     day_msg = (
                         f"Здравствуйте!\n"
                         f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
                         f"Подтвердите свой визит ответным сообщением (только цифра):\n"
-                        f"1 – подтверждаю\n2 – прошу перенести\n3 – прошу отменить\n"
-                        f"Телефон для связи: {phone_center}"
+                        f"1 – подтверждаю\n3 – прошу отменить\n"
+                        f"Для переноса записи обратитесь к нам по телефону: {phone_center}"
                     )
                     send_chatwoot_message(phone, day_msg)
-
                     db.add(SendedMessage(
                         appointment_id=msg.appointment_id,
                         type="day_remind",
                         scheduled_at=scheduled_at,
                         phone_number=phone,
-                        phone_center=phone_center
+                        phone_center=phone_center,
+                        appointment_json=msg.appointment_json
                     ))
                     db.commit()
-                    logger.info(f"📆 Утром отправлено day_remind из pending: {msg.appointment_id}")
+                    logger.info(f"📆 Отправлено day_remind в окно 09–10: {msg.appointment_id}")
                     processed_count += 1
                     continue
-                if msg.type == "pending" and now.hour == 20 and msg.send_after:
-                    if 24 * 60 <= minutes_to_appointment <= 24 * 60 + 13 * 60 and "day_remind" not in sent_types:
-                        day_msg = (
-                            f"Здравствуйте!\n"
-                            f"Напоминаем, что вы записаны в МРТ Эксперт на {dt_str}.\n"
-                            f"Подтвердите свой визит ответным сообщением (только цифра):\n"
-                            f"1 – подтверждаю\n3 – прошу отменить\n"
-                            f"Телефон для связи: {phone_center}"
-                        )
-                        send_chatwoot_message(phone, day_msg)
-                        db.add(SendedMessage(
-                            appointment_id=msg.appointment_id,
-                            type="day_remind",
-                            scheduled_at=scheduled_at,
-                            phone_number=phone,
-                            phone_center=phone_center,
-                            appointment_json=msg.appointment_json
-                        ))
-                        db.commit()
-                        logger.info(f"🌙 Догнали day_remind (+13ч): {msg.appointment_id}")
 
-                    # 2ч-догон: [120 .. 120+13h]
+                if msg.type == "pending" and now.hour == 20 and msg.send_after:
                     if  2 * 60  <= minutes_to_appointment <=  90 + 13 * 60 and "hour_remind" not in sent_types:
                         hour_msg = (
                             f"Здравствуйте!\n"
@@ -228,7 +328,7 @@ def save_last_processed_time():
                             f"В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                             f"Телефон для связи {phone_center}."
                         )
-                        send_chatwoot_message(phone, hour_msg)
+                        send_chatwoot_message(phone, hour_msg,action="info_2")
                         db.add(SendedMessage(
                             appointment_id=msg.appointment_id,
                             type="hour_remind",
@@ -379,7 +479,6 @@ def process_items_cron():
                     logger.info(f"⛔ Пропуск: запись в прошлом ({earliest_time.isoformat() if earliest_time else 'None'})")
                     continue
                 item = earliest_item_obj["item"]
-                print("sdcsds", item)
                 item_id = item.get("id")
                 list_of_apt_in_one_day = grouped_full[phone][datetime.fromisoformat(scheduled_at).date().isoformat()]
                 item_status = item.get("status")
@@ -388,7 +487,7 @@ def process_items_cron():
 
                 appointment_in_db = db.query(SendedMessage).filter(
                     SendedMessage.appointment_id == item_id,
-                    SendedMessage.type.in_(['pending', 'pending_day'])
+                    SendedMessage.type.in_(['pending'])
                 ).first()
 
                 if item_status in skip_statuses:
@@ -402,14 +501,12 @@ def process_items_cron():
                     appointment_in_db.scheduled_at = earliest_time
                     outdated_reminders = db.query(SendedMessage).filter(
                         SendedMessage.appointment_id == item_id,
-                        SendedMessage.type.in_(['new_remind', 'day_remind', 'hour_remind'])
+                        SendedMessage.type.in_(['new_remind', 'day_remind', 'hour_remind', 'pending'])
                     ).all()
-                    print("ggh",appointment_in_db)
                     for reminder in outdated_reminders:
                         db.delete(reminder)
                     db.commit()
                     logger.info(f"✏️ Обновлено pending сообщение для {item_id}: новое время {earliest_time.isoformat()}")
-
                 delta = earliest_time - now
                 dt_str = earliest_time.strftime('%d.%m.%Y %H:%M')
                 full_clinic = clinic_map.get(clinic.get("id"), clinic)
@@ -432,13 +529,13 @@ def process_items_cron():
                             f"\n"
                             f"В центре нужно быть за 15 минут до приема.\n"
                             f"\n"
-                            f"При себе необходимо иметь паспорт, направление, если оно есть, и результаты предыдущих исследований\n"
+                            f"При себе необходимо иметь паспорт, снилс , направление, если оно есть, и результаты предыдущих исследований\n"
                             f"\n"
                             f"Телефон для связи: {phone_center}\n"
                             f"\n"
                             f"Если вы проходите процедуру МРТ впервые, рекомендуем посмотреть видео описание о том как проходит процедура по ссылке: https://vk.com/video-48669646_456239221?list=ec01502c735e906314"
                     )
-                    send_chatwoot_message(phone, new_msg)
+                    send_chatwoot_message(phone, new_msg, action="info")
                     try:
                         service_id = item.get('service', {}).get('id', '')
                         if not service_id:
@@ -482,28 +579,13 @@ def process_items_cron():
                         phone_number=phone,
                         phone_center=phone_center,
                         appointment_json=list_of_apt_in_one_day,
-                        send_after=True if earliest_time.hour >= 21 or earliest_time.hour < 8 else False
+                        send_after=True if (earliest_time.hour >= 21 or earliest_time.hour < 8 ) or (earliest_time.hour >= 21 or earliest_time.hour < 8 ) else False
                     ))
                     db.commit()
-
                     logger.info(f"🟢 Новая запись отправлена: {item_id}")
                     notified_phones.add(phone)
                     processed_count += 1
                     continue
-                if 1400 <= minutes_to_appointment <= 1440 and 0 <= earliest_time.hour < 7:
-                    logger.info(f"🌙 Ночь: откладываем сообщение (pending_day) для {item_id}")
-                    is_created_type = db.query(SendedMessage).filter_by(
-                        appointment_id=item_id, type="pending_day"
-                    ).first()
-                    if not is_created_type:
-                        db.add(SendedMessage(
-                            appointment_id=item_id,
-                            type="pending_day",
-                            scheduled_at=earliest_time,
-                            phone_number=phone,
-                            phone_center=phone_center
-                        ))
-                        db.commit()
             logger.info(f"✅ Завершено. Уведомлений отправлено: {processed_count}")
 
     except Exception as e:
@@ -517,22 +599,30 @@ def cleanup_old_messages():
         db = SessionLocal()
         tz_msk = timezone(timedelta(hours=3))
         now = datetime.now(tz=tz_msk)
+
         messages = db.query(SendedMessage).all()
         deleted_count = 0
 
         for msg in messages:
             try:
-                scheduled_at_str = msg.scheduled_at
-                scheduled_at = datetime.fromisoformat(scheduled_at_str)
+                scheduled_at = msg.scheduled_at
+                if scheduled_at is None:
+                    continue    
                 if scheduled_at.tzinfo is None:
-                    scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+                    scheduled_at = scheduled_at.replace(tzinfo=tz_msk)
+                else:
+                    scheduled_at = scheduled_at.astimezone(tz_msk)
+
                 if scheduled_at < now:
                     db.delete(msg)
                     deleted_count += 1
+
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка при парсинге даты у сообщения {msg.id}: {e}")
+                logger.warning(f"⚠️ Ошибка при обработке сообщения {msg.id}: {e}")
+
         db.commit()
         logger.info(f"🗑 Удалено {deleted_count} устаревших сообщений")
+
     except Exception as e:
         logger.error(f"❌ Ошибка при очистке старых сообщений: {e}")
     finally:

@@ -15,14 +15,12 @@ CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
 async def process_chatwoot_webhook(request):
     processed_messages = set()
     body = await request.json()
-    logger.info("Получен вебхук от Chatwoot: %s", body)
     if body.get("event") != "message_created":
         return {"status": "ignored"}
     message = body.get("content")
     sender = body.get("sender", {})
     sender_type = sender.get("type")
     chat_id = body.get("conversation", {}).get("contact_inbox", {}).get("source_id")
-    print( body.get("conversation", {}).get("contact_inbox", {}))
     message_id = body.get("id")
 
     if not all([message, sender_type, chat_id, message_id]):
@@ -42,7 +40,5 @@ async def process_chatwoot_webhook(request):
         "linkPreview": False
     }
     async with httpx.AsyncClient() as client:
-        response = await client.post(greenapi_url, json=payload)
-        print(payload)
-        logger.info("Ответ от GreenAPI: %s", response.text)            
+        await client.post(greenapi_url, json=payload)    
     return {"status": "sent"} 
