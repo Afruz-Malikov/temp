@@ -283,7 +283,7 @@ def save_last_processed_time():
                         "В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                         f"Телефон для связи {phone_center}."
                     )
-                    send_chatwoot_message(phone, hour_msg)
+                    send_chatwoot_message(phone, hour_msg, action="info_2")
                     db.add(SendedMessage(
                         appointment_id=msg.appointment_id,
                         type="hour_remind",

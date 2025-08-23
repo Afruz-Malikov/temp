@@ -329,7 +329,10 @@ async def process_greenapi_webhook(request):
             return "desc_cons"
         if t.startswith(_norm("Важно:")) or "telemedex" in t:
             return "desc_cons"
-
+        if t.startswith(_norm("Спасибо за подтверждение записи.")):
+            return "confirm"
+        if t.startswith(_norm("Благодарим за обратную связь!")):
+            return "cancel"
         # Просрочка описания (на случай текстовой формы)
         if "приносим извинение за увеличение сроков описания" in t:
             return "broken_time"
