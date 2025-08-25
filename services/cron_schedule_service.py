@@ -157,7 +157,6 @@ def send_chatwoot_message(phone: str, message: str, action: Optional[str] = None
                     return
             else:
                 contact_id = contact["id"]
-
             # 2) беседа (ищем открытую, иначе создаём)
             r = client.get(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
@@ -213,14 +212,6 @@ def send_chatwoot_message(phone: str, message: str, action: Optional[str] = None
                     r.raise_for_status()
                 else:
                     logger.warning(f"Ярлык '{wanted}' не найден среди категорий аккаунта — пропускаю навешивание")
-
-                # закрыть диалог
-                r = client.post(
-                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_status",
-                    json={"status": "resolved"},
-                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
-                )
-                r.raise_for_status()
 
             return conversation_id
 
@@ -392,24 +383,30 @@ def process_items_cron():
             if not cid:
                 continue
             try:
-                today_str = now.strftime('%Y-%m-%d')
+                # today_str = now.strftime('%Y-%m-%d')
+                # app_resp = httpx.get(
+                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
+                #     timeout=60,
+                #     headers=auth_header
+                # )
+                # upd_resp = httpx.get(
+                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
+                #     timeout=60,
+                #     headers=auth_header
+                # )
+                # app_resp.raise_for_status()
+                # upd_resp.raise_for_status()
+                # created = app_resp.json().get("result", [])
+                # updated = upd_resp.json().get("result", [])
+                # updated_ids = {appt['id'] for appt in updated}
+                # merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
+                # all_appointments.extend(updated + merged_appointments)
                 app_resp = httpx.get(
-                    f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
+                    f"https://f2d7add55feb.ngrok-free.app/appointments",
                     timeout=60,
-                    headers=auth_header
+                    headers={"ngrok-skip-browser-warning": "true"}
                 )
-                upd_resp = httpx.get(
-                    f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
-                    timeout=60,
-                    headers=auth_header
-                )
-                app_resp.raise_for_status()
-                upd_resp.raise_for_status()
-                created = app_resp.json().get("result", [])
-                updated = upd_resp.json().get("result", [])
-                updated_ids = {appt['id'] for appt in updated}
-                merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
-                all_appointments.extend(updated + merged_appointments)
+                all_appointments.extend(app_resp.json().get("result", []))
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
         grouped = defaultdict(lambda: defaultdict(list))
@@ -544,7 +541,7 @@ def process_items_cron():
                         if service_id not in services_prepare_messages:
                             try:
                                 service_resp = httpx.get(
-                                    f"https://api.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
+                                    f"https://apitest.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
                                     timeout=20,
                                     headers=auth_header
                                 )

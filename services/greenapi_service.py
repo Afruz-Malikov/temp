@@ -39,7 +39,7 @@ CITY_IDS = [
     "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b",
     "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f"
 ]
-APPOINTMENTS_API_URL_V3 = "https://api.mrtexpert.ru/api/v3/appointments"
+APPOINTMENTS_API_URL_V3 = "https://apitest.mrtexpert.ru/api/v3/appointments"
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 def _get_sheets_service():
     if not GOOGLE_SA_FILE:
@@ -364,15 +364,6 @@ async def process_greenapi_webhook(request):
             headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
         )
         r.raise_for_status()
-
-    async def _cw_resolve(client, conversation_id: int):
-        r = await client.post(
-            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_status",
-            json={"status": "resolved"},
-            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-        )
-        r.raise_for_status()
-
     # ======================== Existing utils (unchanged behavior) ========================
     def _parse_ai_control(ai_reply: str):
         """
@@ -621,7 +612,6 @@ async def process_greenapi_webhook(request):
                         await _cw_add_labels(client, conversation_id, [label_to_use])
                     else:
                         logger.warning(f"Ярлык '{wanted_label}' не найден среди категорий — пропускаю навешивание")
-                    await _cw_resolve(client, conversation_id)
                 except Exception as lab_e:
                     logger.warning(f"Не удалось навесить ярлык/закрыть разговор: {lab_e}")
 
