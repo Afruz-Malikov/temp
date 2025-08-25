@@ -523,7 +523,7 @@ def process_items_cron():
                     new_msg = (
                             f"Здравствуйте!\n"
                             f"\n"
-                            f"Вы записаны в МРТ Эксперт на { 'несколько услуг, первый прием в' if len(list_of_apt_in_one_day) > 1 else ''} {dt_str}.\n"
+                            f"Вы записаны в Клинику Эксперт на { 'несколько услуг, первый прием в' if len(list_of_apt_in_one_day) > 1 else ''} {dt_str}.\n"
                             f"\n"
                             f"Адрес: {address}, {directions}\n"
                             f"\n"
