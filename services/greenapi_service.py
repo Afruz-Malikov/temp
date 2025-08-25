@@ -658,6 +658,8 @@ async def call_ai_service(messages, why_tag: str = None) -> str:
     """
     Логирует входящие сообщения и метаданные ответа, чтобы понять
     почему модель дала такой ответ.
+    Возвращает только строку результата (без обертки {"result": ...}),
+    кроме управляющих JSON confirm/cancel/operator_connect.
     """
     if not OPEN_API_KEY:
         return "[Ошибка: не задан OPEN_API_KEY]"
@@ -678,7 +680,21 @@ async def call_ai_service(messages, why_tag: str = None) -> str:
         choice = resp.choices[0]
         content = (choice.message.content or "").strip()
 
-        # 2) Логируем ВЫХОД (ключевое для «почему так ответил»)
+        # --- Разворачиваем "обертку" {"result": "..."} ---
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                # Управляющий JSON (confirm/cancel/operator_connect) оставляем как есть
+                if "type" in parsed and "message" in parsed:
+                    content = json.dumps(parsed, ensure_ascii=False)
+                # Обертка {"result": "..."} → вернуть только внутренний текст
+                elif set(parsed.keys()) == {"result"}:
+                    inner = parsed.get("result")
+                    content = "" if inner is None else str(inner)
+        except Exception:
+            pass
+
+        # 2) Логируем ВЫХОД
         logger.info(
             "[GPT %s] OUTPUT id=%s model=%s finish_reason=%s latency_ms=%d",
             trace, getattr(resp, "id", None), getattr(resp, "model", None),
@@ -693,12 +709,12 @@ async def call_ai_service(messages, why_tag: str = None) -> str:
             usage = str(getattr(resp, "usage", None))
         logger.info("[GPT %s] USAGE=%s", trace, _j(usage))
 
-        # полезно видеть tool_calls/функции, если они влияали на ответ
+        # tool_calls/функции
         tool_calls = getattr(choice.message, "tool_calls", None)
         if tool_calls:
             logger.info("[GPT %s] TOOL_CALLS=%s", trace, _j(tool_calls))
 
-        # И сам текст ответа целиком (для разбора причин)
+        # Сам текст ответа
         logger.info("[GPT %s] OUTPUT content=%s", trace, _j(content))
         return content
 
