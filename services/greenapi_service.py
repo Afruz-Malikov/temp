@@ -367,15 +367,6 @@ async def process_greenapi_webhook(request):
             headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
         )
         r.raise_for_status()
-
-    async def _cw_resolve(client, conversation_id: int):
-        r = await client.post(
-            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_status",
-            json={"status": "resolved"},
-            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
-        )
-        r.raise_for_status()
-
     # ======================== Existing utils (unchanged behavior) ========================
     def _parse_ai_control(ai_reply: str):
         """
@@ -420,7 +411,7 @@ async def process_greenapi_webhook(request):
         if num.count('+') > 1:
             num = '+' + num.replace('+', '')
         return num or None
-
+    
     def _find_last_phone_in_history(greenapi_history):
         """
         Ищем телефон в последнем исходящем (outgoing) сообщении — там лежит шаблон уведомления.
@@ -432,7 +423,7 @@ async def process_greenapi_webhook(request):
                 if ph:
                     return ph
         return None
-
+    
     def _is_valid_ai_reply(reply: str) -> bool:
         """
         Проверяет, что ответ GPT не пустой/мусорный.
@@ -624,7 +615,6 @@ async def process_greenapi_webhook(request):
                         await _cw_add_labels(client, conversation_id, [label_to_use])
                     else:
                         logger.warning(f"Ярлык '{wanted_label}' не найден среди категорий — пропускаю навешивание")
-                    await _cw_resolve(client, conversation_id)
                 except Exception as lab_e:
                     logger.warning(f"Не удалось навесить ярлык/закрыть разговор: {lab_e}")
 

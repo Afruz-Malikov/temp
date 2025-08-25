@@ -213,15 +213,6 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
                     r.raise_for_status()
                 else:
                     logger.warning(f"Ярлык '{wanted}' не найден среди категорий аккаунта — пропускаю навешивание")
-
-                # закрыть диалог
-                r = client.post(
-                    f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/toggle_status",
-                    json={"status": "resolved"},
-                    headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
-                )
-                r.raise_for_status()
-
             return conversation_id
 
     except Exception as e:
