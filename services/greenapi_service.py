@@ -668,7 +668,7 @@ async def call_ai_service(messages, why_tag: str = None) -> str:
     client = openai.AsyncOpenAI(api_key=OPEN_API_KEY)
 
     # 1) Логируем ВХОД (весь стек сообщений + параметры)
-    params = dict(model="gpt-4.1-mini", temperature=0.7, max_tokens=512)
+    params = dict(model="gpt-4.1-nano", temperature=0.7, max_tokens=512)
     logger.info("[GPT %s] INPUT params=%s", trace, _j(params))
     logger.info("[GPT %s] INPUT messages=%s", trace, _j(messages))
 
