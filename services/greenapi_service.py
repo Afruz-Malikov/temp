@@ -449,7 +449,7 @@ async def process_greenapi_webhook(request):
 
     sender_chat_id = body.get("senderData", {}).get("chatId", "")
     sender_name = body.get("senderData", {}).get("senderName", "")
-    instance_id = str(body.get("instanceData", {}).get("idInstance"))
+    instance_id = str(body.get("instanceData", {}).get("idInstance"))   
     chatwoot_inbox_id = inbox_by_id_instance_match.get(instance_id, {}).get("inbox_id")
     logger.info(f"Webhook from instance {instance_id}, chat {sender_chat_id}: {message!r} {body}")
     green_token = inbox_by_id_instance_match.get(instance_id, {}).get("green_token") 
