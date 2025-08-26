@@ -93,7 +93,7 @@ def extract_scheduled_at(message ):
     now = datetime.now()
     this_year = now.year
 
-    def build_and_return(y: int, m: int, d: int, hh: int, mm: int) -> str | None:
+    def build_and_return(y: int, m: int, d: int, hh: int, mm: int) :
         try:
             dt = datetime(y, m, d, hh, mm)
         except ValueError:
@@ -299,7 +299,7 @@ async def process_greenapi_webhook(request):
         "tax_cert":      "справка_в_налоговую",
     }
 
-    def detect_action_from_ai_reply(ai_reply: str) -> str | None:
+    def detect_action_from_ai_reply(ai_reply: str) :
         """Определяет action по точным формулировкам из таблицы (только для текстовых ответов)."""
         if not ai_reply:
             return None
@@ -341,7 +341,7 @@ async def process_greenapi_webhook(request):
         data = r.json()
         return (data.get("payload") or data.get("data") or data) if isinstance(data, (list, dict)) else []
 
-    def _pick_label(existing_labels: list[dict], wanted_name: str) -> str | None:
+    def _pick_label(existing_labels: list[dict], wanted_name: str) :
         if not wanted_name:
             return None
         wn = wanted_name.strip().lower().replace(" ", "_")
@@ -371,7 +371,7 @@ async def process_greenapi_webhook(request):
         n = _digits(n)
         return f"+{n}" if n and not n.startswith("+") else n
 
-    async def _cw_search_contact_by_phone(client, phone_e164: str) -> dict | None:
+    async def _cw_search_contact_by_phone(client, phone_e164: str):
         """
         Поиск контакта через обычный GET /contacts/search?p={phone}
         (есть фолбэк на q= для совместимости).

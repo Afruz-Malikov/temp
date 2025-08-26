@@ -109,6 +109,7 @@ def cw_list_labels(client) -> list[dict]:
     data = r.json()
     labels = data.get("payload", [])
     return labels 
+
 def pick_label(existing_labels: list[dict], wanted_name: str):
     """
     Возвращает точное имя ярлыка из существующих (если есть), иначе None.
@@ -118,6 +119,38 @@ def pick_label(existing_labels: list[dict], wanted_name: str):
         name = it.get("title") or it.get("name")
         if name == wanted_name:
             return name
+    return None
+
+def _digits_only(s: str) -> str:
+    """
+    Возвращает только цифры из строки (для точного сравнения телефонов).
+    """
+    import re as _re
+    return _re.sub(r"\D+", "", s or "")
+
+def cw_search_contact_by_phone(client, base_url, account_id, api_key, phone_e164: str):
+    """
+    Поиск контакта через обычный GET /contacts/search?p={phone} (фолбэк на q=).
+    Возвращает первый ТOЧНЫЙ матч по номеру телефона (сравнение по цифрам).
+    """
+    headers = {"api_access_token": api_key}
+    url = f"{base_url}/api/v1/accounts/{account_id}/contacts/search"
+
+    # Сначала параметр p=, затем фолбэк q=
+    for params in ({"p": phone_e164}, {"q": phone_e164}):
+        try:
+            r = client.get(url, params=params, headers=headers, timeout=10)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            arr = data.get("payload") or data.get("data") or (data if isinstance(data, list) else [])
+            for c in (arr or []):
+                pn = c.get("phone_number") or ""
+                if _digits_only(pn) == _digits_only(phone_e164):
+                    return c
+        except Exception:
+            # проглатываем и пробуем следующий вариант
+            continue
     return None
 
 # === 2) обновлённая send_chatwoot_message ====================================
@@ -136,39 +169,54 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
     "broken_time":   "нарушен_срок_описания",
     "tax_cert":      "справка_в_налоговую",
 }
-
-
     try:
         with httpx.Client(timeout=10.0) as client:
-            # 1) контакт
-            contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
-            contact = next((c for c in contacts if c.get("phone_number") == f"+{phone}"), None)
+            # 1) контакт — ИЗМЕНЕНО: используем /contacts/search?p=..., фолбэк на q=
+            phone_e164 = f"+{phone}"
+            contact = cw_search_contact_by_phone(
+                client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY, phone_e164
+            )
             if not contact:
                 r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
                     json={"name": f"+{phone}", "phone_number": f"+{phone}"},
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                 )
-                r.raise_for_status()
-                cj = r.json()
-                contact_id = cj.get("id") or cj.get("payload", {}).get("contact", {}).get("id") or cj.get("contact", {}).get("id")
-                if not contact_id:
-                    logger.error(f"Не удалось получить contact_id: {cj}")
-                    return
+                # учтём возможную гонку: "Phone number has already been taken"
+                if r.status_code == 422 and "Phone number has already been taken" in r.text:
+                    contact = cw_search_contact_by_phone(
+                        client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY, phone_e164
+                    )
+                    if not contact:
+                        logger.error("Контакт уже существует, но не найден через /contacts/search")
+                        return
+                    contact_id = contact["id"]
+                else:
+                    r.raise_for_status()
+                    cj = r.json()
+                    contact_id = cj.get("id") or cj.get("payload", {}).get("contact", {}).get("id") or cj.get("contact", {}).get("id")
+                    if not contact_id:
+                        logger.error(f"Не удалось получить contact_id: {cj}")
+                        return
             else:
                 contact_id = contact["id"]
 
-            # 2) беседа (ищем открытую, иначе создаём)
+            # 2) беседа — ИЗМЕНЕНО: ищем разговор ИМЕННО ДЛЯ НУЖНОГО inbox_id (CHATWOOT_INBOX_ID)
             r = client.get(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
             )
             r.raise_for_status()
             conversations = (r.json().get("payload") or r.json().get("data") or [])
-            open_conv = next((c for c in conversations if c.get("status") == "open"), None)
+            conversation_id = None
+            for c in conversations:
+                # выбираем разговор, привязанный к нужному inbox’у
+                if str(c.get("inbox_id")) == str(CHATWOOT_INBOX_ID):
+                    conversation_id = c["id"]
+                    break
 
-            if open_conv:
-                conversation_id = open_conv["id"]
+            if conversation_id:
+                # при необходимости переназначим ответственного
                 if assignee_id:
                     client.patch(
                         f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
@@ -176,6 +224,7 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
                         headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                     )
             else:
+                # создаём новый разговор в КОНКРЕТНОМ inbox
                 r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
                     json={
@@ -190,6 +239,9 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
                 r.raise_for_status()
                 cj = r.json()
                 conversation_id = cj.get("id") or cj.get("payload", {}).get("id") or cj.get("conversation", {}).get("id")
+                if not conversation_id:
+                    logger.error(f"Не удалось получить conversation_id из ответа: {cj}")
+                    return
 
             # 3) сообщение
             r = client.post(
