@@ -14,7 +14,7 @@ from datetime import datetime ,timezone, timedelta
 from googleapiclient.discovery import build
 import json
 from dateutil import parser
-
+from constant.matchers import inbox_by_id_instance_match
 load_dotenv()
 
 logger = logging.getLogger("uvicorn.webhook")
@@ -24,21 +24,14 @@ def _j(obj):  # безопасный json для логов
         return json.dumps(obj, ensure_ascii=False)
     except Exception:
         return str(obj)
-GREENAPI_ID = os.getenv("GREENAPI_ID")
 OPEN_API_KEY = os.getenv("OPENAI_API_KEY")
-GREENAPI_TOKEN = os.getenv("GREENAPI_TOKEN")
 CHATWOOT_API_KEY = os.getenv("CHATWOOT_API_KEY")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
-CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
-CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
+CHATWOOT_BASE_URL = "https://expert.tag24.ru"
 APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID") or "1aO1sI0cGAZAvr96unecOoVEkJ9upNbO8NfFDe3psFOg"
 SHEET_NAME = os.getenv("SHEET_NAME", "Лист1")
 GOOGLE_SA_FILE = os.getenv("GOOGLE_SA_FILE") 
-CITY_IDS = [
-    "0f2f2d09-8e7a-4356-bd4d-0b055d802e7b",
-    "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f"
-]
 APPOINTMENTS_API_URL_V3 = "https://api.mrtexpert.ru/api/v3/appointments"
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 def _get_sheets_service():
@@ -279,11 +272,11 @@ async def change_appointment_by_message(message: str, phone_number: str, status:
         if db:
             db.close()
 
-def get_greenapi_chat_history(chat_id, count=18):
+def get_greenapi_chat_history(chat_id, count=18, green_id = '' , green_token = ''): 
     """
     Получить историю сообщений из GreenAPI по chat_id
     """
-    url = f"https://api.green-api.com/waInstance{GREENAPI_ID}/GetChatHistory/{GREENAPI_TOKEN}"
+    url = f"https://api.green-api.com/waInstance{green_id}/GetChatHistory/{green_token}"
     payload = {"chatId": chat_id, "count": count}
     try:
         resp = httpx.post(url, json=payload, timeout=10, headers={"Content-Type": "application/json"})
@@ -456,7 +449,10 @@ async def process_greenapi_webhook(request):
 
     sender_chat_id = body.get("senderData", {}).get("chatId", "")
     sender_name = body.get("senderData", {}).get("senderName", "")
-
+    instance_id = str(body.get("instanceData", {}).get("idInstance"))
+    chatwoot_inbox_id = inbox_by_id_instance_match.get(instance_id, {}).get("inbox_id")
+    green_token = inbox_by_id_instance_match.get(instance_id, {}).get("green_token") 
+    green_id = inbox_by_id_instance_match.get(instance_id, {}).get("green_id")
     if not message or not sender_chat_id:
         logger.warning("Нет текста или sender_chat_id")
         return {"status": "no content"}
@@ -514,7 +510,7 @@ async def process_greenapi_webhook(request):
                 conv_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
                     json={
-                        "inbox_id": int(CHATWOOT_INBOX_ID),
+                        "inbox_id": int(chatwoot_inbox_id),
                         "contact_id": contact_id,
                         "source_id": sender_chat_id,
                         "additional_attributes": {},
@@ -545,7 +541,7 @@ async def process_greenapi_webhook(request):
             )
             msg_resp.raise_for_status()
             # --- AI обработка ---
-            greenapi_history = get_greenapi_chat_history(sender_chat_id)
+            greenapi_history = get_greenapi_chat_history(sender_chat_id, green_token=green_token, green_id=green_id)
             system_prompt = fetch_google_doc_text() or "You are a helpful assistant."
             gpt_messages = [{"role": "system", "content": system_prompt}]
             for msg in reversed(greenapi_history):

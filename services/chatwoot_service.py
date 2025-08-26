@@ -3,15 +3,10 @@ import httpx
 import os
 import re
 from dotenv import load_dotenv
+from constant.matchers import instance_by_inbox_id
 load_dotenv()
 logger = logging.getLogger("uvicorn.webhook")
 logging.basicConfig(level=logging.INFO)
-GREENAPI_ID = os.getenv("GREENAPI_ID")
-GREENAPI_TOKEN = os.getenv("GREENAPI_TOKEN")
-CHATWOOT_API_KEY = os.getenv("CHATWOOT_API_KEY")
-CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
-CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
-CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
 async def process_chatwoot_webhook(request):
     processed_messages = set()
     body = await request.json()
@@ -20,9 +15,10 @@ async def process_chatwoot_webhook(request):
     message = body.get("content")
     sender = body.get("sender", {})
     sender_type = sender.get("type")
+    inbox_id = str(body.get("conversation", {}).get("inbox_id"))
+    instance_info = instance_by_inbox_id.get(inbox_id) or {}
     chat_id = body.get("conversation", {}).get("contact_inbox", {}).get("source_id")
     message_id = body.get("id")
-
     if not all([message, sender_type, chat_id, message_id]):
         return {"status": "missing data"}
 
@@ -33,7 +29,7 @@ async def process_chatwoot_webhook(request):
         return {"status": "duplicate"}
     processed_messages.add(message_id)
 
-    greenapi_url = f"https://api.green-api.com/waInstance{GREENAPI_ID}/SendMessage/{GREENAPI_TOKEN}"
+    greenapi_url = f"https://api.green-api.com/waInstance{instance_info.get('id')}/SendMessage/{instance_info.get('token')}"
     payload = {
         "chatId": chat_id,
         "message": message,
