@@ -37,5 +37,5 @@ async def process_chatwoot_webhook(request):
     }
     async with httpx.AsyncClient() as client:
        resp =  await client.post(greenapi_url, json=payload)    
-       logger.info(f"Sent to GreenAPI: {resp.status_code}, {resp.json()}")
+       logger.info(f"Sent to GreenAPI: {resp.status_code}, {resp.text} {resp}")
     return {"status": "sent"} 
