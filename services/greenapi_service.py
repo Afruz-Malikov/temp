@@ -306,7 +306,7 @@ async def process_greenapi_webhook(request):
         import re as _re
 
         def _norm(s: str) -> str:
-            s = s.replace(" ", " ")
+            s = s.replace(" ", " ")
             s = _re.sub(r"\s+", " ", s.strip())
             return s.lower()
 
@@ -360,6 +360,41 @@ async def process_greenapi_webhook(request):
             headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
         )
         r.raise_for_status()
+
+    # ===== Новые утилиты для поиска контакта и нормализации номера =====
+    def _digits(s: str) -> str:
+        return re.sub(r"\D+", "", s or "")
+
+    def _e164_from_chatid(chat_id: str) -> str:
+        # "998901234567@c.us" -> "+998901234567"
+        n = (chat_id or "").replace("@c.us", "")
+        n = _digits(n)
+        return f"+{n}" if n and not n.startswith("+") else n
+
+    async def _cw_search_contact_by_phone(client, phone_e164: str) -> dict | None:
+        """
+        Поиск контакта через обычный GET /contacts/search?p={phone}
+        (есть фолбэк на q= для совместимости).
+        Возвращает первый точный матч по номеру.
+        """
+        base = f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/search"
+        headers = {"api_access_token": CHATWOOT_API_KEY}
+
+        for params in ({"p": phone_e164}, {"q": phone_e164}):
+            try:
+                sr = await client.get(base, params=params, headers=headers, timeout=15)
+                if sr.status_code != 200:
+                    continue
+                data = sr.json()
+                arr = data.get("payload") or data.get("data") or (data if isinstance(data, list) else [])
+                for c in (arr or []):
+                    pn = c.get("phone_number") or ""
+                    if _digits(pn) == _digits(phone_e164):
+                        return c
+            except Exception:
+                continue
+        return None
+
     # ======================== Existing utils (unchanged behavior) ========================
     def _parse_ai_control(ai_reply: str):
         """
@@ -449,9 +484,9 @@ async def process_greenapi_webhook(request):
 
     sender_chat_id = body.get("senderData", {}).get("chatId", "")
     sender_name = body.get("senderData", {}).get("senderName", "")
-    instance_id = str(body.get("instanceData", {}).get("idInstance"))   
+    instance_id = str(body.get("instanceData", {}).get("idInstance"))
     chatwoot_inbox_id = inbox_by_id_instance_match.get(instance_id, {}).get("inbox_id")
-    logger.info(f"Webhook from instance {instance_id}, chat {sender_chat_id}: {inbox_by_id_instance_match.get(instance_id, {}).get('green_token') } {inbox_by_id_instance_match}")
+    logger.info(f"Webhook from instance {instance_id}, chat {sender_chat_id}: {message!r} {body}")
     green_token = inbox_by_id_instance_match.get(instance_id, {}).get("green_token") 
     green_id = inbox_by_id_instance_match.get(instance_id, {}).get("green_id")
     if not message or not sender_chat_id:
@@ -463,11 +498,8 @@ async def process_greenapi_webhook(request):
 
     try:
         async with httpx.AsyncClient() as client:
-            # --- Контакт в Chatwoot ---
-            contacts = await get_all_chatwoot_contacts(
-                client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY
-            )
-            contact = next((c for c in contacts if c.get("phone_number") == formatted_phone), None)
+            # --- Контакт в Chatwoot (ИЗМЕНЕНО: поиск через /contacts/search?p=...) ---
+            contact = await _cw_search_contact_by_phone(client, formatted_phone)
 
             if not contact:
                 contact_resp = await client.post(
@@ -476,14 +508,12 @@ async def process_greenapi_webhook(request):
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
                 )
                 if contact_resp.status_code == 422 and "Phone number has already been taken" in contact_resp.text:
-                    contacts = await get_all_chatwoot_contacts(
-                        client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY
-                    )
-                    contact = next((c for c in contacts if c.get("phone_number") == formatted_phone), None)
+                    # если гонка — повторный поиск через search
+                    contact = await _cw_search_contact_by_phone(client, formatted_phone)
                     if contact:
                         contact_id = contact["id"]
                     else:
-                        raise Exception("Контакт с этим номером уже есть, но не найден в списке.")
+                        raise Exception("Контакт с этим номером уже есть, но не найден через search.")
                 else:
                     contact_resp.raise_for_status()
                     contact_json = contact_resp.json()
@@ -497,7 +527,7 @@ async def process_greenapi_webhook(request):
             else:
                 contact_id = contact["id"]
 
-            # --- Поиск/создание разговора ---
+            # --- Поиск/создание разговора ИМЕННО ДЛЯ ЭТОГО inbox (ИЗМЕНЕНО) ---
             convs_resp = await client.get(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
@@ -505,9 +535,13 @@ async def process_greenapi_webhook(request):
             convs_resp.raise_for_status()
             conversations = convs_resp.json().get("payload", [])
 
-            if conversations:
-                conversation_id = conversations[0]["id"]
-            else:
+            conversation_id = None
+            for c in conversations:
+                if str(c.get("inbox_id")) == str(chatwoot_inbox_id):
+                    conversation_id = c["id"]
+                    break
+
+            if not conversation_id:
                 conv_resp = await client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
                     json={
@@ -541,6 +575,7 @@ async def process_greenapi_webhook(request):
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
             )
             msg_resp.raise_for_status()
+
             # --- AI обработка ---
             greenapi_history = get_greenapi_chat_history(sender_chat_id, green_token=green_token, green_id=green_id)
             system_prompt = fetch_google_doc_text() or "You are a helpful assistant."
