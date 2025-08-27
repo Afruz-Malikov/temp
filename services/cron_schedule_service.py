@@ -334,7 +334,7 @@ def save_last_processed_time():
                 if minutes_to_appointment <= 0:
                     continue  
                 desired_inbox_id =inbox_id_by_clinic_id[ msg.appointment_json[0].get("clinic", {}).get("id")] or CHATWOOT_INBOX_ID
-                logger.info(f"Resolved inbox_id={desired_inbox_id} for appointment_id={msg.appointment_json}")
+                
                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
                 time_str = scheduled_at.strftime('%H:%M')
                 phone_center = msg.phone_center
@@ -626,7 +626,7 @@ def process_items_cron():
                 phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "84742505105"))
                 minutes_to_appointment = int(delta.total_seconds() / 60)
                 desired_inbox_id = inbox_id_by_clinic_id[list_of_apt_in_one_day[0].get("clinic", {}).get("id")] or CHATWOOT_INBOX_ID
-                logger.info(f"Resolved inbox_id={desired_inbox_id} for appointment_id={list_of_apt_in_one_day}")
+                
                 if minutes_to_appointment <= 30:
                     logger.info(f"⏩ Пропущено: осталось {int(delta.total_seconds() // 60)} мин до приёма в {earliest_time.strftime('%d.%m.%Y %H:%M')}")
                     continue
