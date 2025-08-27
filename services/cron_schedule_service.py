@@ -153,34 +153,31 @@ def cw_search_contact_by_phone(client, base_url, account_id, api_key, phone_e164
             # проглатываем и пробуем следующий вариант
             continue
     return None
-def resolve_inbox_id_from_appointment_json(appointment_json, default_inbox_id: int | str) -> int:
+def resolve_inbox_id_from_appointment_json(appointment_json, default_inbox_id) -> int:
     """
-    Берём первую запись из списка appointment_json, достаём clinic.city_id (приоритетно),
-    если его нет — clinic.id. Смотрим в inbox_id_by_city_or_clinic.
-    Возвращаем int inbox_id, либо default_inbox_id, если не нашли.
+    Берём ПЕРВУЮ запись из списка appointment_json, достаём clinic.id.
+    Если чего-то нет — возвращаем default_inbox_id.
     """
     try:
-        # default нормализуем к int
-        try:
-            default_inbox_id = int(default_inbox_id)
-        except Exception:
-            default_inbox_id = int(CHATWOOT_INBOX_ID)
-        if isinstance(appointment_json, list) and appointment_json:
-            first = appointment_json[0] or {}
-            clinic = first.get("clinic", {}) or {}
-            clinic_id = clinic.get("id")
+        default_inbox_id = int(default_inbox_id)
+    except Exception:
+        pass
 
-            for key in clinic_id:
-                if key and key in inbox_id_by_clinic_id:
-                    return int(inbox_id_by_clinic_id[key])
-        return default_inbox_id
-    except Exception as e:
-        logger.warning(f"resolve_inbox_id_from_appointment_json: {e}")
-        try:
-            return int(CHATWOOT_INBOX_ID)
-        except Exception:
+    try:
+        if not appointment_json:
             return default_inbox_id
-
+        if isinstance(appointment_json, list):
+            first = appointment_json[0] if appointment_json else None
+        elif isinstance(appointment_json, dict):
+            first = appointment_json  # иногда сохраняют одним объектом
+        else:
+            return default_inbox_id
+        clinic = (first or {}).get("clinic") or {}
+        clinic_id = clinic.get("id")
+        inbox_str = inbox_id_by_clinic_id.get(clinic_id)
+        return int(inbox_str) if inbox_str is not None else default_inbox_id
+    except Exception:
+        return default_inbox_id
 # === 2) обновлённая send_chatwoot_message ====================================
 def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_id: int = 3,inbox_id: int = CHATWOOT_INBOX_ID):
     """
@@ -333,7 +330,9 @@ def save_last_processed_time():
                 minutes_to_appointment = int(delta.total_seconds() / 60)
                 if minutes_to_appointment <= 0:
                     continue  
-                desired_inbox_id =inbox_id_by_clinic_id[ msg.appointment_json[0].get("clinic", {}).get("id")] or CHATWOOT_INBOX_ID
+                desired_inbox_id =resolve_inbox_id_from_appointment_json(
+                    msg.appointment_json, CHATWOOT_INBOX_ID
+                )
                 
                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
                 time_str = scheduled_at.strftime('%H:%M')
@@ -625,8 +624,7 @@ def process_items_cron():
                 directions = full_clinic.get("directions", "")
                 phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "84742505105"))
                 minutes_to_appointment = int(delta.total_seconds() / 60)
-                desired_inbox_id = inbox_id_by_clinic_id[list_of_apt_in_one_day[0].get("clinic", {}).get("id")] or CHATWOOT_INBOX_ID
-                
+                desired_inbox_id = inbox_id_by_clinic_id.get(clinic.get("id", "19901c01-523d-11e5-bd0c-c8600054f881")) or CHATWOOT_INBOX_ID
                 if minutes_to_appointment <= 30:
                     logger.info(f"⏩ Пропущено: осталось {int(delta.total_seconds() // 60)} мин до приёма в {earliest_time.strftime('%d.%m.%Y %H:%M')}")
                     continue
