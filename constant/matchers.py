@@ -20,3 +20,8 @@ instance_by_inbox_id = {
    "7": {"token": GREENAPI_TOKEN_2, "id": GREENAPI_ID_2},
    "4": {"token": GREENAPI_TOKEN_3, "id": GREENAPI_ID_3},  
 }
+inbox_id_by_clinic_id = {
+  "19901c01-523d-11e5-bd0c-c8600054f881": "6",  # Липецк1
+  "ade465cc-944f-11e6-b645-c8600054f881": "7",  # Липецк2
+  "224b1764-6a1d-11eb-b818-005056b3ebff": "7",  # Липецк4
+}

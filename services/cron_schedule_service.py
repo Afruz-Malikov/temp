@@ -4,6 +4,7 @@ import httpx
 import os
 import json
 from typing import Optional
+from constant.matchers import inbox_id_by_clinic_id
 from db import SessionLocal
 from models.sended_message import SendedMessage
 from pathlib import Path
@@ -152,9 +153,36 @@ def cw_search_contact_by_phone(client, base_url, account_id, api_key, phone_e164
             # проглатываем и пробуем следующий вариант
             continue
     return None
+def resolve_inbox_id_from_appointment_json(appointment_json, default_inbox_id: int | str) -> int:
+    """
+    Берём первую запись из списка appointment_json, достаём clinic.city_id (приоритетно),
+    если его нет — clinic.id. Смотрим в inbox_id_by_city_or_clinic.
+    Возвращаем int inbox_id, либо default_inbox_id, если не нашли.
+    """
+    try:
+        # default нормализуем к int
+        try:
+            default_inbox_id = int(default_inbox_id)
+        except Exception:
+            default_inbox_id = int(CHATWOOT_INBOX_ID)
+        if isinstance(appointment_json, list) and appointment_json:
+            first = appointment_json[0] or {}
+            clinic = first.get("clinic", {}) or {}
+            clinic_id = clinic.get("id")
+
+            for key in clinic_id:
+                if key and key in inbox_id_by_clinic_id:
+                    return int(inbox_id_by_clinic_id[key])
+        return default_inbox_id
+    except Exception as e:
+        logger.warning(f"resolve_inbox_id_from_appointment_json: {e}")
+        try:
+            return int(CHATWOOT_INBOX_ID)
+        except Exception:
+            return default_inbox_id
 
 # === 2) обновлённая send_chatwoot_message ====================================
-def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_id: int = 3):
+def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_id: int = 3,inbox_id: int = CHATWOOT_INBOX_ID):
     """
     phone   — номер БЕЗ '+'
     action  — None | 'confirm' | 'cancel' | 'info' | 'info_2' | 'price_cons' | 'desc_cons' | 'broken_time' | 'tax_cert'
@@ -211,7 +239,7 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
             conversation_id = None
             for c in conversations:
                 # выбираем разговор, привязанный к нужному inbox’у
-                if str(c.get("inbox_id")) == str(CHATWOOT_INBOX_ID):
+                if str(c.get("inbox_id")) == str(inbox_id):
                     conversation_id = c["id"]
                     break
 
@@ -228,7 +256,7 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
                 r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
                     json={
-                        "inbox_id": int(CHATWOOT_INBOX_ID),
+                        "inbox_id": int(inbox_id),
                         "contact_id": contact_id,
                         "source_id": f"{phone}@c.us",
                         "status": "open",
@@ -283,7 +311,6 @@ def save_last_processed_time():
         db = SessionLocal()
         moscow_tz = timezone(timedelta(hours=3))
         now = datetime.now(moscow_tz) 
-        local_hour = now.astimezone(timezone(timedelta(hours=3))).hour 
         with open(LAST_PROCESSED_FILE, 'w') as f:
             json.dump({'last_processed': now.isoformat()}, f)
             pending_messages = db.query(SendedMessage).filter(
@@ -306,7 +333,8 @@ def save_last_processed_time():
                 minutes_to_appointment = int(delta.total_seconds() / 60)
                 if minutes_to_appointment <= 0:
                     continue  
-
+                desired_inbox_id =inbox_id_by_clinic_id[ msg.appointment_json[0].get("clinic", {}).get("id")] or CHATWOOT_INBOX_ID
+                logger.info(f"Resolved inbox_id={desired_inbox_id} for appointment_id={msg.appointment_json}")
                 dt_str = scheduled_at.strftime('%d.%m.%Y в %H:%M')
                 time_str = scheduled_at.strftime('%H:%M')
                 phone_center = msg.phone_center
@@ -326,7 +354,7 @@ def save_last_processed_time():
                         "В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                         f"Телефон для связи {phone_center}."
                     )
-                    send_chatwoot_message(phone, hour_msg, action="info_2")
+                    send_chatwoot_message(phone, hour_msg, action="info_2", inbox_id=desired_inbox_id)
                     db.add(SendedMessage(
                         appointment_id=msg.appointment_id,
                         type="hour_remind",
@@ -349,7 +377,7 @@ def save_last_processed_time():
                         f"1 – подтверждаю\n3 – прошу отменить\n"
                         f"Для переноса записи обратитесь к нам по телефону: {phone_center}"
                     )
-                    send_chatwoot_message(phone, day_msg)
+                    send_chatwoot_message(phone, day_msg ,inbox_id=desired_inbox_id)
                     db.add(SendedMessage(
                         appointment_id=msg.appointment_id,
                         type="day_remind",
@@ -371,7 +399,7 @@ def save_last_processed_time():
                             f"В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                             f"Телефон для связи {phone_center}."
                         )
-                        send_chatwoot_message(phone, hour_msg,action="info_2")
+                        send_chatwoot_message(phone, hour_msg,action="info_2" ,inbox_id=desired_inbox_id)
                         db.add(SendedMessage(
                             appointment_id=msg.appointment_id,
                             type="hour_remind",
@@ -407,7 +435,8 @@ def process_items_cron():
         auth_header = {"Authorization": f"Bearer {APPOINTMENTS_API_KEY}"}
         skip_statuses = ['paid', 'done', 'canceled', 'started']
 
-        clinics = [ {
+        clinics = [
+        {
             "id": "19901c01-523d-11e5-bd0c-c8600054f881",
             "name": "Липецк 1 МРТ-Эксперт",
             "region": "Липецкая обл",
@@ -425,7 +454,46 @@ def process_items_cron():
             },
             "longitude": "0",
             "latitude": "0"
-        },]
+        },
+        {
+            "id": "ade465cc-944f-11e6-b645-c8600054f881",
+            "name": "Липецк 2 МРТ-Эксперт",
+            "region": "Липецкая обл",
+            "region_code": 48,
+            "city_id": "eacb5f15-1a2e-432e-904a-ca56bd635f1b",
+            "address": "г. Липецк, ул. Космонавтов, дом 39 (территория больницы скорой медицинской помощи, вход со стороны ул. Космонавтов)f",
+            "work_time": {
+                "mo": "07:00-23:00",
+                "tu": "07:00-23:00",
+                "we": "07:00-23:00",
+                "th": "07:00-23:00",
+                "fr": "07:00-23:00",
+                "sa": "07:00-23:00",
+                "su": "07:00-23:00"
+            },
+            "longitude": "0",
+            "latitude": "0"
+        },
+         {
+            "id": "224b1764-6a1d-11eb-b818-005056b3ebff",
+            "name": "Липецк 4 МРТ-Эксперт",
+            "region": "Липецкая обл",
+            "region_code": 48,
+            "city_id": "eacb5f15-1a2e-432e-904a-ca56bd635f1b",
+            "address": "398035, Липецкая обл, Липецк г, Звездная ул, д. №15, литера 1",
+            "work_time": {
+                "mo": "07:00-23:00",
+                "tu": "07:00-23:00",
+                "we": "07:00-23:00",
+                "th": "07:00-23:00",
+                "fr": "07:00-23:00",
+                "sa": "07:00-23:00",
+                "su": "07:00-23:00"
+            },
+            "longitude": "0",
+            "latitude": "0"
+        },
+        ]
 
         clinic_map = {c['id']: c for c in clinics}
         all_appointments = []
@@ -557,6 +625,8 @@ def process_items_cron():
                 directions = full_clinic.get("directions", "")
                 phone_center = city_data.get(full_clinic.get("city_id", ""), {}).get("phone", full_clinic.get("phone", "84742505105"))
                 minutes_to_appointment = int(delta.total_seconds() / 60)
+                desired_inbox_id = inbox_id_by_clinic_id[list_of_apt_in_one_day[0].get("clinic", {}).get("id")] or CHATWOOT_INBOX_ID
+                logger.info(f"Resolved inbox_id={desired_inbox_id} for appointment_id={list_of_apt_in_one_day}")
                 if minutes_to_appointment <= 30:
                     logger.info(f"⏩ Пропущено: осталось {int(delta.total_seconds() // 60)} мин до приёма в {earliest_time.strftime('%d.%m.%Y %H:%M')}")
                     continue
@@ -578,7 +648,7 @@ def process_items_cron():
                             f"\n"
                             f"Если вы проходите процедуру МРТ впервые, рекомендуем посмотреть видео описание о том как проходит процедура по ссылке: https://vk.com/video-48669646_456239221?list=ec01502c735e906314"
                     )
-                    send_chatwoot_message(phone, new_msg, action="info")
+                    send_chatwoot_message(phone, new_msg, action="info", inbox_id=desired_inbox_id)
                     try:
                         service_id = item.get('service', {}).get('id', '')
                         if not service_id:
@@ -595,7 +665,7 @@ def process_items_cron():
                                 prepare_message = service_resp.json().get("result", {}).get("prepare", "")
                                 services_prepare_messages[service_id] = prepare_message
                                 if prepare_message:
-                                    send_chatwoot_message(phone, prepare_message)
+                                    send_chatwoot_message(phone, prepare_message,inbox_id=desired_inbox_id)
                                     logger.info(f"📄 Отправлено сообщение с подготовкой: {item_id}")
                             except Exception as e:
                                 logger.warning(f"Ошибка получения подготовки для service_id {service_id}: {e}")
@@ -603,7 +673,7 @@ def process_items_cron():
                             # Повторное использование сохранённого сообщения
                             saved_prepare_message = services_prepare_messages[service_id]
                             if saved_prepare_message:
-                                send_chatwoot_message(phone, saved_prepare_message)
+                                send_chatwoot_message(phone, saved_prepare_message,action="info", inbox_id=desired_inbox_id)
                                 logger.info(f"📄 Отправлено сохраненное сообщение с подготовкой: {item_id}")
                     except Exception as e:
                         logger.warning(f"Ошибка получения подготовки: {e}")
