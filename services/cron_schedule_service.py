@@ -16,7 +16,7 @@ GREENAPI_TOKEN = os.getenv("GREENAPI_TOKEN")
 CHATWOOT_API_KEY = os.getenv("CHATWOOT_API_KEY")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID")
-CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL")
+CHATWOOT_BASE_URL = "https://expert.tag24.ru"
 GOOGLE_API_DOCS_SECRET = os.getenv("GOOGLE_API_DOCS_SECRET")
 APPOINTMENTS_API_KEY = os.getenv("APPOINTMENTS_API_KEY") or 'ENByZZnh5rvXfxHd8LeqrhVA'
 
@@ -109,7 +109,8 @@ def cw_list_labels(client) -> list[dict]:
     data = r.json()
     labels = data.get("payload", [])
     return labels 
-def pick_label(existing_labels: list[dict], wanted_name: str) -> str | None:
+
+def pick_label(existing_labels: list[dict], wanted_name: str):
     """
     Возвращает точное имя ярлыка из существующих (если есть), иначе None.
     Chatwoot в ответе может прислать ключ 'title' или 'name' — поддержим оба.
@@ -120,8 +121,40 @@ def pick_label(existing_labels: list[dict], wanted_name: str) -> str | None:
             return name
     return None
 
+def _digits_only(s: str) -> str:
+    """
+    Возвращает только цифры из строки (для точного сравнения телефонов).
+    """
+    import re as _re
+    return _re.sub(r"\D+", "", s or "")
+
+def cw_search_contact_by_phone(client, base_url, account_id, api_key, phone_e164: str):
+    """
+    Поиск контакта через обычный GET /contacts/search?p={phone} (фолбэк на q=).
+    Возвращает первый ТOЧНЫЙ матч по номеру телефона (сравнение по цифрам).
+    """
+    headers = {"api_access_token": api_key}
+    url = f"{base_url}/api/v1/accounts/{account_id}/contacts/search"
+
+    # Сначала параметр p=, затем фолбэк q=
+    for params in ({"p": phone_e164}, {"q": phone_e164}):
+        try:
+            r = client.get(url, params=params, headers=headers, timeout=10)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            arr = data.get("payload") or data.get("data") or (data if isinstance(data, list) else [])
+            for c in (arr or []):
+                pn = c.get("phone_number") or ""
+                if _digits_only(pn) == _digits_only(phone_e164):
+                    return c
+        except Exception:
+            # проглатываем и пробуем следующий вариант
+            continue
+    return None
+
 # === 2) обновлённая send_chatwoot_message ====================================
-def send_chatwoot_message(phone: str, message: str, action: Optional[str] = None, assignee_id: int = 3):
+def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_id: int = 3):
     """
     phone   — номер БЕЗ '+'
     action  — None | 'confirm' | 'cancel' | 'info' | 'info_2' | 'price_cons' | 'desc_cons' | 'broken_time' | 'tax_cert'
@@ -136,38 +169,55 @@ def send_chatwoot_message(phone: str, message: str, action: Optional[str] = None
     "broken_time":   "нарушен_срок_описания",
     "tax_cert":      "справка_в_налоговую",
 }
-
-
     try:
         with httpx.Client(timeout=10.0) as client:
-            # 1) контакт
-            contacts = get_all_chatwoot_contacts(client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY)
-            contact = next((c for c in contacts if c.get("phone_number") == f"+{phone}"), None)
+            # 1) контакт — ИЗМЕНЕНО: используем /contacts/search?p=..., фолбэк на q=
+            phone_e164 = f"+{phone}"
+            contact = cw_search_contact_by_phone(
+                client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY, phone_e164
+            )
             if not contact:
                 r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts",
                     json={"name": f"+{phone}", "phone_number": f"+{phone}"},
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                 )
-                r.raise_for_status()
-                cj = r.json()
-                contact_id = cj.get("id") or cj.get("payload", {}).get("contact", {}).get("id") or cj.get("contact", {}).get("id")
-                if not contact_id:
-                    logger.error(f"Не удалось получить contact_id: {cj}")
-                    return
+                # учтём возможную гонку: "Phone number has already been taken"
+                if r.status_code == 422 and "Phone number has already been taken" in r.text:
+                    contact = cw_search_contact_by_phone(
+                        client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY, phone_e164
+                    )
+                    if not contact:
+                        logger.error("Контакт уже существует, но не найден через /contacts/search")
+                        return
+                    contact_id = contact["id"]
+                else:
+                    r.raise_for_status()
+                    cj = r.json()
+                    contact_id = cj.get("id") or cj.get("payload", {}).get("contact", {}).get("id") or cj.get("contact", {}).get("id")
+                    if not contact_id:
+                        logger.error(f"Не удалось получить contact_id: {cj}")
+                        return
             else:
                 contact_id = contact["id"]
-            # 2) беседа (ищем открытую, иначе создаём)
+
+
+            # 2) беседа — ИЗМЕНЕНО: ищем разговор ИМЕННО ДЛЯ НУЖНОГО inbox_id (CHATWOOT_INBOX_ID)
             r = client.get(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
             )
             r.raise_for_status()
             conversations = (r.json().get("payload") or r.json().get("data") or [])
-            open_conv = next((c for c in conversations if c.get("status") == "open"), None)
+            conversation_id = None
+            for c in conversations:
+                # выбираем разговор, привязанный к нужному inbox’у
+                if str(c.get("inbox_id")) == str(CHATWOOT_INBOX_ID):
+                    conversation_id = c["id"]
+                    break
 
-            if open_conv:
-                conversation_id = open_conv["id"]
+            if conversation_id:
+                # при необходимости переназначим ответственного
                 if assignee_id:
                     client.patch(
                         f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
@@ -175,6 +225,7 @@ def send_chatwoot_message(phone: str, message: str, action: Optional[str] = None
                         headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                     )
             else:
+                # создаём новый разговор в КОНКРЕТНОМ inbox
                 r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
                     json={
@@ -189,6 +240,9 @@ def send_chatwoot_message(phone: str, message: str, action: Optional[str] = None
                 r.raise_for_status()
                 cj = r.json()
                 conversation_id = cj.get("id") or cj.get("payload", {}).get("id") or cj.get("conversation", {}).get("id")
+                if not conversation_id:
+                    logger.error(f"Не удалось получить conversation_id из ответа: {cj}")
+                    return
 
             # 3) сообщение
             r = client.post(
@@ -212,7 +266,8 @@ def send_chatwoot_message(phone: str, message: str, action: Optional[str] = None
                     r.raise_for_status()
                 else:
                     logger.warning(f"Ярлык '{wanted}' не найден среди категорий аккаунта — пропускаю навешивание")
-
+                    
+                    
             return conversation_id
 
     except Exception as e:
@@ -274,7 +329,7 @@ def save_last_processed_time():
                         "В центре нужно быть за 15 минут до начала приема для оформления документов.\n"
                         f"Телефон для связи {phone_center}."
                     )
-                    send_chatwoot_message(phone, hour_msg)
+                    send_chatwoot_message(phone, hour_msg, action="info_2")
                     db.add(SendedMessage(
                         appointment_id=msg.appointment_id,
                         type="hour_remind",
@@ -385,12 +440,12 @@ def process_items_cron():
             try:
                 # today_str = now.strftime('%Y-%m-%d')
                 # app_resp = httpx.get(
-                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
+                #     f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
                 #     timeout=60,
                 #     headers=auth_header
                 # )
                 # upd_resp = httpx.get(
-                #     f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
+                #     f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
                 #     timeout=60,
                 #     headers=auth_header
                 # )
@@ -402,7 +457,7 @@ def process_items_cron():
                 # merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
                 # all_appointments.extend(updated + merged_appointments)
                 app_resp = httpx.get(
-                    f"https://f2d7add55feb.ngrok-free.app/appointments",
+                    f"https://324f23f096d1.ngrok-free.app/appointments",
                     timeout=60,
                     headers={"ngrok-skip-browser-warning": "true"}
                 )
@@ -520,7 +575,7 @@ def process_items_cron():
                     new_msg = (
                             f"Здравствуйте!\n"
                             f"\n"
-                            f"Вы записаны в МРТ Эксперт на { 'несколько услуг, первый прием в' if len(list_of_apt_in_one_day) > 1 else ''} {dt_str}.\n"
+                            f"Вы записаны в Клинику Эксперт на { 'несколько услуг, первый прием в' if len(list_of_apt_in_one_day) > 1 else ''} {dt_str}.\n"
                             f"\n"
                             f"Адрес: {address}, {directions}\n"
                             f"\n"
@@ -541,7 +596,7 @@ def process_items_cron():
                         if service_id not in services_prepare_messages:
                             try:
                                 service_resp = httpx.get(
-                                    f"https://apitest.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
+                                    f"https://api.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
                                     timeout=20,
                                     headers=auth_header
                                 )
