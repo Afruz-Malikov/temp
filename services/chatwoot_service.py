@@ -43,9 +43,8 @@ async def process_chatwoot_webhook(request):
     except Exception as e:
         logger.error(f"Ошибка в process_chatwoot_webhook: {e}")
         try:
-            import asyncio
             from utils.send_message_to_tg_bot import send_message_to_tg_bot
-            asyncio.run(send_message_to_tg_bot(f"Ошибка в process_chatwoot_webhook: {e}"))
+            await send_message_to_tg_bot(f"Ошибка в process_chatwoot_webhook: {e}")
         except Exception:
             pass
         return {"status": "error", "detail": str(e)}
