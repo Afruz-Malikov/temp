@@ -712,7 +712,7 @@ def process_items_cron():
                         if service_id not in services_prepare_messages:
                             try:
                                 service_resp = httpx.get(
-                                    f"https://apitest.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
+                                    f"https://api.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
                                     timeout=20,
                                     headers=auth_header
                                 )
