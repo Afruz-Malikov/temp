@@ -4,6 +4,7 @@ import httpx
 import os
 import json
 from typing import Optional
+from utils.send_message_to_tg_bot import send_message_to_tg_bot
 from constant.matchers import inbox_id_by_clinic_id
 from db import SessionLocal
 from models.sended_message import SendedMessage
@@ -96,6 +97,26 @@ def get_all_chatwoot_contacts(client, base_url, account_id, api_key):
     return contacts
 
 # === 1) helpers ===============================================================
+def cw_get_conversation_labels(client, conversation_id: int | str) -> list[str]:
+    """
+    Возвращает текущие ярлыки беседы.
+    GET /api/v1/accounts/{ACCOUNT_ID}/conversations/{conversation_id}
+    В ответе поле 'labels' — список строк.
+    """
+    r = client.get(
+        f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
+        headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
+        timeout=10
+    )
+    r.raise_for_status()
+    data = r.json()
+    # chatwoot может вернуть в разных ключах; поддержим варианты
+    conv = data.get("payload") or data.get("data") or data
+    labels = conv.get("labels") or []
+    # нормализуем только к строкам
+    return [str(x) for x in labels if isinstance(x, (str, int))]
+
+
 def cw_list_labels(client) -> list[dict]:
     """
     Возвращает список ярлыков аккаунта Chatwoot.
@@ -111,6 +132,7 @@ def cw_list_labels(client) -> list[dict]:
     labels = data.get("payload", [])
     return labels 
 
+
 def pick_label(existing_labels: list[dict], wanted_name: str):
     """
     Возвращает точное имя ярлыка из существующих (если есть), иначе None.
@@ -122,22 +144,15 @@ def pick_label(existing_labels: list[dict], wanted_name: str):
             return name
     return None
 
+
 def _digits_only(s: str) -> str:
-    """
-    Возвращает только цифры из строки (для точного сравнения телефонов).
-    """
     import re as _re
     return _re.sub(r"\D+", "", s or "")
 
+
 def cw_search_contact_by_phone(client, base_url, account_id, api_key, phone_e164: str):
-    """
-    Поиск контакта через обычный GET /contacts/search?p={phone} (фолбэк на q=).
-    Возвращает первый ТOЧНЫЙ матч по номеру телефона (сравнение по цифрам).
-    """
     headers = {"api_access_token": api_key}
     url = f"{base_url}/api/v1/accounts/{account_id}/contacts/search"
-
-    # Сначала параметр p=, затем фолбэк q=
     for params in ({"p": phone_e164}, {"q": phone_e164}):
         try:
             r = client.get(url, params=params, headers=headers, timeout=10)
@@ -150,14 +165,11 @@ def cw_search_contact_by_phone(client, base_url, account_id, api_key, phone_e164
                 if _digits_only(pn) == _digits_only(phone_e164):
                     return c
         except Exception:
-            # проглатываем и пробуем следующий вариант
             continue
     return None
+
+
 def resolve_inbox_id_from_appointment_json(appointment_json, default_inbox_id) -> int:
-    """
-    Берём ПЕРВУЮ запись из списка appointment_json, достаём clinic.id.
-    Если чего-то нет — возвращаем default_inbox_id.
-    """
     try:
         default_inbox_id = int(default_inbox_id)
     except Exception:
@@ -169,7 +181,7 @@ def resolve_inbox_id_from_appointment_json(appointment_json, default_inbox_id) -
         if isinstance(appointment_json, list):
             first = appointment_json[0] if appointment_json else None
         elif isinstance(appointment_json, dict):
-            first = appointment_json  # иногда сохраняют одним объектом
+            first = appointment_json
         else:
             return default_inbox_id
         clinic = (first or {}).get("clinic") or {}
@@ -178,25 +190,25 @@ def resolve_inbox_id_from_appointment_json(appointment_json, default_inbox_id) -
         return int(inbox_str) if inbox_str is not None else default_inbox_id
     except Exception:
         return default_inbox_id
-# === 2) обновлённая send_chatwoot_message ====================================
-def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_id: int = 3,inbox_id: int = CHATWOOT_INBOX_ID):
+
+
+def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_id: int = 3, inbox_id: int = CHATWOOT_INBOX_ID):
     """
     phone   — номер БЕЗ '+'
     action  — None | 'confirm' | 'cancel' | 'info' | 'info_2' | 'price_cons' | 'desc_cons' | 'broken_time' | 'tax_cert'
     """
     ACTION_TO_LABEL = {
-    "confirm":       "подтвердил_запись",
-    "cancel":        "отмена",
-    "info":          "информирование",
-    "info_2":        "информирование_2",
-    "desc_cons":     "консультация_по_описанию",
-    "price_cons":    "консультация_по_стоимости_и_записи",
-    "broken_time":   "нарушен_срок_описания",
-    "tax_cert":      "справка_в_налоговую",
-}
+        "confirm":     "подтвердил_запись",
+        "cancel":      "отмена",
+        "info":        "информирование",
+        "info_2":      "информирование_2",
+        "desc_cons":   "консультация_по_описанию",
+        "price_cons":  "консультация_по_стоимости_и_записи",
+        "broken_time": "нарушен_срок_описания",
+        "tax_cert":    "справка_в_налоговую",
+    }
     try:
         with httpx.Client(timeout=10.0) as client:
-            # 1) контакт — ИЗМЕНЕНО: используем /contacts/search?p=..., фолбэк на q=
             phone_e164 = f"+{phone}"
             contact = cw_search_contact_by_phone(
                 client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY, phone_e164
@@ -207,7 +219,6 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
                     json={"name": f"+{phone}", "phone_number": f"+{phone}"},
                     headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                 )
-                # учтём возможную гонку: "Phone number has already been taken"
                 if r.status_code == 422 and "Phone number has already been taken" in r.text:
                     contact = cw_search_contact_by_phone(
                         client, CHATWOOT_BASE_URL, CHATWOOT_ACCOUNT_ID, CHATWOOT_API_KEY, phone_e164
@@ -226,7 +237,7 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
             else:
                 contact_id = contact["id"]
 
-            # 2) беседа — ИЗМЕНЕНО: ищем разговор ИМЕННО ДЛЯ НУЖНОГО inbox_id (CHATWOOT_INBOX_ID)
+            # 2) разговор для нужного inbox
             r = client.get(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
@@ -235,13 +246,11 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
             conversations = (r.json().get("payload") or r.json().get("data") or [])
             conversation_id = None
             for c in conversations:
-                # выбираем разговор, привязанный к нужному inbox’у
                 if str(c.get("inbox_id")) == str(inbox_id):
                     conversation_id = c["id"]
                     break
 
             if conversation_id:
-                # при необходимости переназначим ответственного
                 if assignee_id:
                     client.patch(
                         f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
@@ -249,7 +258,6 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
                         headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                     )
             else:
-                # создаём новый разговор в КОНКРЕТНОМ inbox
                 r = client.post(
                     f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations",
                     json={
@@ -268,7 +276,7 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
                     logger.error(f"Не удалось получить conversation_id из ответа: {cj}")
                     return
 
-            # 3) сообщение
+            # 3) отправляем сообщение
             r = client.post(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/messages",
                 json={"content": message, "message_type": "outgoing"},
@@ -276,24 +284,44 @@ def send_chatwoot_message(phone: str, message: str, action: str = '', assignee_i
             )
             r.raise_for_status()
 
-            # 4) если нужно — подобрать ЯРЛЫК из АКТУАЛЬНОГО списка и закрыть
+            # 4) ярлыки: берём актуальные ярлыки аккаунта, находим нужный,
+            #    затем МЕРДЖИМ с текущими ярлыками беседы и отправляем объединённый список.
             if action in ACTION_TO_LABEL:
                 wanted = ACTION_TO_LABEL[action]
-                existing = cw_list_labels(client)              # <-- тянем актуальные категории
-                label_to_use = pick_label(existing, wanted)    # <-- берём нужный по имени
+
+                # проверяем, что такой ярлык вообще существует в аккаунте
+                existing_account_labels = cw_list_labels(client)
+                label_to_use = pick_label(existing_account_labels, wanted)
                 if label_to_use:
+                    try:
+                        # текущие ярлыки беседы
+                        current_labels = cw_get_conversation_labels(client, conversation_id)
+                    except Exception as e:
+                        logger.warning(f"Не удалось получить текущие ярлыки беседы {conversation_id}: {e}")
+                        current_labels = []
+
+                    # мерджим без дубликатов (регистрозависимо, как в Chatwoot)
+                    merged = list(dict.fromkeys([*current_labels, label_to_use]))
+
                     r = client.post(
                         f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}/labels",
-                        json={"labels": [label_to_use]},
+                        json={"labels": merged},
                         headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"},
                     )
                     r.raise_for_status()
                 else:
                     logger.warning(f"Ярлык '{wanted}' не найден среди категорий аккаунта — пропускаю навешивание")
+
             return conversation_id
 
     except Exception as e:
         logger.error(f"Ошибка отправки в Chatwoot: {e}")
+        try:
+            import asyncio
+            from utils.send_message_to_tg_bot import send_message_to_tg_bot
+            asyncio.run(send_message_to_tg_bot(f"Ошибка отправки в Chatwoot: {e}"))
+        except Exception:
+            pass
 
 city_data = {
     "19901c01-523d-11e5-bd0c-c8600054f881": {
@@ -411,11 +439,23 @@ def save_last_processed_time():
                         logger.info(f"🌙 Догнали hour_remind (+13ч): {msg.appointment_id}")
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке pending сообщения {msg.appointment_id}: {e}")
+                try:
+                    import asyncio
+                    from utils.send_message_to_tg_bot import send_message_to_tg_bot
+                    asyncio.run(send_message_to_tg_bot(f"⚠️ Ошибка при обработке pending сообщения {msg.appointment_id}: {e}"))
+                except Exception:
+                    pass
 
         logger.info(f"✅ Обработка отложенных уведомлений завершена. Отправлено: {processed_count}")
 
     except Exception as e:
         logger.error(f"❌ Ошибка в save_last_processed_time: {e}")
+        try:
+            import asyncio
+            from utils.send_message_to_tg_bot import send_message_to_tg_bot
+            asyncio.run(send_message_to_tg_bot(f"❌ Ошибка в save_last_processed_time: {e}"))
+        except Exception:
+            pass
     finally: 
         db.close()
 
@@ -502,26 +542,33 @@ def process_items_cron():
             if not cid:
                 continue
             try:
-                today_str = now.strftime('%Y-%m-%d')
+                # today_str = now.strftime('%Y-%m-%d')
+                # app_resp = httpx.get(
+                #     f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
+                #     timeout=60,
+                #     headers=auth_header
+                # )
+                # upd_resp = httpx.get(
+                #     f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
+                #     timeout=60,
+                #     headers=auth_header
+                # )
+                # app_resp.raise_for_status()
+                # upd_resp.raise_for_status()
+                # created = app_resp.json().get("result", [])
+                # updated = upd_resp.json().get("result", [])
+                # updated_ids = {appt['id'] for appt in updated}
+                # merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
+                # all_appointments.extend(updated + merged_appointments)
                 app_resp = httpx.get(
-                    f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
+                    f"https://7c2dfab3652d.ngrok-free.app/appointments",
                     timeout=60,
-                    headers=auth_header
+                    headers={"ngrok-skip-browser-warning": "true"}
                 )
-                upd_resp = httpx.get(
-                    f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
-                    timeout=60,
-                    headers=auth_header
-                )
-                app_resp.raise_for_status()
-                upd_resp.raise_for_status()
-                created = app_resp.json().get("result", [])
-                updated = upd_resp.json().get("result", [])
-                updated_ids = {appt['id'] for appt in updated}
-                merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
-                all_appointments.extend(updated + merged_appointments)
+                all_appointments.extend(app_resp.json().get("result", []))
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
+                
         grouped = defaultdict(lambda: defaultdict(list))
         grouped_full = defaultdict(lambda: defaultdict(list))
         for appt in all_appointments:
@@ -590,16 +637,26 @@ def process_items_cron():
                     continue
                 item = earliest_item_obj["item"]
                 item_id = item.get("id")
-                list_of_apt_in_one_day = grouped_full[phone][datetime.fromisoformat(scheduled_at).date().isoformat()]
+                # используем тот же день, что и у earliest_time (мы его уже нормализовали в МСК)
+                date_key = earliest_time.date().isoformat() 
+                # достаём весь список аппойтментов для этого телефона и даты
+                list_of_apt_in_one_day = grouped_full[phone][date_key]
+                # на всякий случай: если по какой-то причине список пуст,
+                # кладём хотя бы сам earliest_item_obj, чтобы не сохранять []
+                if not list_of_apt_in_one_day:
+                    list_of_apt_in_one_day = [earliest_item_obj]
+                    logger.warning(
+                        "appointment_json fallback to [earliest_item_obj]: phone=%s, date=%s, appt_id=%s",
+                        phone, date_key, item_id
+                    )
+
                 item_status = item.get("status")
                 clinic = earliest_item_obj.get("clinic", {})
                 patient = earliest_item_obj.get("patient", {})
-
                 appointment_in_db = db.query(SendedMessage).filter(
                     SendedMessage.appointment_id == item_id,
                     SendedMessage.type.in_(['pending'])
-                ).first()
-
+                 ).first()
                 if item_status in skip_statuses:
                     logger.info(f"⛔ Пропуск: статус {item_status} из списка исключений")
                     if appointment_in_db:
@@ -655,7 +712,7 @@ def process_items_cron():
                         if service_id not in services_prepare_messages:
                             try:
                                 service_resp = httpx.get(
-                                    f"https://api.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
+                                    f"https://apitest.mrtexpert.ru/api/v3/services/{service_id}?clinic_id={clinic.get('id')}",
                                     timeout=20,
                                     headers=auth_header
                                 )
@@ -667,6 +724,12 @@ def process_items_cron():
                                     logger.info(f"📄 Отправлено сообщение с подготовкой: {item_id}")
                             except Exception as e:
                                 logger.warning(f"Ошибка получения подготовки для service_id {service_id}: {e}")
+                                try:
+                                    import asyncio
+                                    from utils.send_message_to_tg_bot import send_message_to_tg_bot
+                                    asyncio.run(send_message_to_tg_bot(f"Ошибка получения подготовки для service_id {service_id}: {e}"))
+                                except Exception:
+                                    pass
                         else:
                             # Повторное использование сохранённого сообщения
                             saved_prepare_message = services_prepare_messages[service_id]
@@ -675,6 +738,12 @@ def process_items_cron():
                                 logger.info(f"📄 Отправлено сохраненное сообщение с подготовкой: {item_id}")
                     except Exception as e:
                         logger.warning(f"Ошибка получения подготовки: {e}")
+                        try:
+                            import asyncio
+                            from utils.send_message_to_tg_bot import send_message_to_tg_bot
+                            asyncio.run(send_message_to_tg_bot(f"Ошибка получения подготовки: {e}"))
+                        except Exception:
+                            pass
                     db.add(SendedMessage(
                        appointment_id=item_id,
                         type="new_remind",
@@ -701,6 +770,12 @@ def process_items_cron():
 
     except Exception as e:
         logger.error(f"❌ Ошибка в process_items_cron: {e}")
+        try:
+            import asyncio
+            from utils.send_message_to_tg_bot import send_message_to_tg_bot
+            asyncio.run(send_message_to_tg_bot(f"❌ Ошибка в process_items_cron: {e}"))
+        except Exception:
+            pass
     finally:
         save_last_processed_time()
         db.close()
@@ -730,11 +805,23 @@ def cleanup_old_messages():
 
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка при обработке сообщения {msg.id}: {e}")
+                try:
+                    import asyncio
+                    from utils.send_message_to_tg_bot import send_message_to_tg_bot
+                    asyncio.run(send_message_to_tg_bot(f"⚠️ Ошибка при обработке сообщения {msg.id}: {e}"))
+                except Exception:
+                    pass
 
         db.commit()
         logger.info(f"🗑 Удалено {deleted_count} устаревших сообщений")
 
     except Exception as e:
         logger.error(f"❌ Ошибка при очистке старых сообщений: {e}")
+        try:
+            import asyncio
+            from utils.send_message_to_tg_bot import send_message_to_tg_bot
+            asyncio.run(send_message_to_tg_bot(f"❌ Ошибка при очистке старых сообщений: {e}"))
+        except Exception:
+            pass
     finally:
         db.close()

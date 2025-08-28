@@ -299,7 +299,7 @@ async def process_greenapi_webhook(request):
         "tax_cert":      "справка_в_налоговую",
     }
 
-    def detect_action_from_ai_reply(ai_reply: str) :
+    def detect_action_from_ai_reply(ai_reply: str):
         """Определяет action по точным формулировкам из таблицы (только для текстовых ответов)."""
         if not ai_reply:
             return None
@@ -341,7 +341,7 @@ async def process_greenapi_webhook(request):
         data = r.json()
         return (data.get("payload") or data.get("data") or data) if isinstance(data, (list, dict)) else []
 
-    def _pick_label(existing_labels: list[dict], wanted_name: str) :
+    def _pick_label(existing_labels: list[dict], wanted_name: str):
         if not wanted_name:
             return None
         wn = wanted_name.strip().lower().replace(" ", "_")
@@ -352,6 +352,11 @@ async def process_greenapi_webhook(request):
         return None
 
     async def _cw_add_labels(client, conversation_id: int, labels: list[str]):
+        """
+        Низкоуровневый вызов: просто отправляет список labels.
+        ВАЖНО: этот эндпоинт ПЕРЕЗАПИСЫВАЕТ ярлыки разговора целиком.
+        Чтобы не потерять существующие ярлыки, используйте _cw_merge_and_add_label.
+        """
         if not labels:
             return
         r = await client.post(
@@ -360,6 +365,39 @@ async def process_greenapi_webhook(request):
             headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
         )
         r.raise_for_status()
+
+    async def _cw_get_conversation_labels(client, conversation_id: int | str) -> list[str]:
+        """Возвращает текущие ярлыки беседы (список строк), чтобы их не потерять."""
+        r = await client.get(
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/conversations/{conversation_id}",
+            headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
+        )
+        r.raise_for_status()
+        data = r.json()
+        conv = data.get("payload") or data.get("data") or data
+        labels = conv.get("labels") or []
+        return [str(x) for x in labels if isinstance(x, (str, int))]
+
+    async def _cw_merge_and_add_label(client, conversation_id: int | str, wanted_label_machine_name: str):
+        """
+        - Проверяет существование 'машинного' ярлыка (по словарю ACTION_TO_LABEL) в аккаунте,
+        - Берёт текущие ярлыки беседы,
+        - Мерджит их с нужным ярлыком без дубликатов,
+        - Отправляет объединённый список (не затирая предыдущие).
+        """
+        if not wanted_label_machine_name:
+            return
+        existing = await _cw_list_labels(client)
+        label_to_use = _pick_label(existing, wanted_label_machine_name)
+        if not label_to_use:
+            # нет такого ярлыка в аккаунте — ничего не делаем
+            return
+        try:
+            current = await _cw_get_conversation_labels(client, conversation_id)
+        except Exception:
+            current = []
+        merged = list(dict.fromkeys([*current, label_to_use]))
+        await _cw_add_labels(client, conversation_id, merged)
 
     # ===== Новые утилиты для поиска контакта и нормализации номера =====
     def _digits(s: str) -> str:
@@ -439,7 +477,7 @@ async def process_greenapi_webhook(request):
         if num.count('+') > 1:
             num = '+' + num.replace('+', '')
         return num or None
-    
+
     def _find_last_phone_in_history(greenapi_history):
         """
         Ищем телефон в последнем исходящем (outgoing) сообщении — там лежит шаблон уведомления.
@@ -451,7 +489,7 @@ async def process_greenapi_webhook(request):
                 if ph:
                     return ph
         return None
-    
+
     def _is_valid_ai_reply(reply: str) -> bool:
         """
         Проверяет, что ответ GPT не пустой/мусорный.
@@ -487,7 +525,7 @@ async def process_greenapi_webhook(request):
     instance_id = str(body.get("instanceData", {}).get("idInstance"))
     chatwoot_inbox_id = inbox_by_id_instance_match.get(instance_id, {}).get("inbox_id")
     logger.info(f"Webhook from instance {instance_id}, chat {sender_chat_id}: {message!r} {body}")
-    green_token = inbox_by_id_instance_match.get(instance_id, {}).get("green_token") 
+    green_token = inbox_by_id_instance_match.get(instance_id, {}).get("green_token")
     green_id = inbox_by_id_instance_match.get(instance_id, {}).get("green_id")
     if not message or not sender_chat_id:
         logger.warning("Нет текста или sender_chat_id")
@@ -498,7 +536,7 @@ async def process_greenapi_webhook(request):
 
     try:
         async with httpx.AsyncClient() as client:
-            # --- Контакт в Chatwoot (ИЗМЕНЕНО: поиск через /contacts/search?p=...) ---
+            # --- Контакт в Chatwoot (поиск через /contacts/search?p=...) ---
             contact = await _cw_search_contact_by_phone(client, formatted_phone)
 
             if not contact:
@@ -527,7 +565,7 @@ async def process_greenapi_webhook(request):
             else:
                 contact_id = contact["id"]
 
-            # --- Поиск/создание разговора ИМЕННО ДЛЯ ЭТОГО inbox (ИЗМЕНЕНО) ---
+            # --- Поиск/создание разговора именно для этого inbox ---
             convs_resp = await client.get(
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{CHATWOOT_ACCOUNT_ID}/contacts/{contact_id}/conversations",
                 headers={"api_access_token": CHATWOOT_API_KEY, "Content-Type": "application/json"}
@@ -588,7 +626,6 @@ async def process_greenapi_webhook(request):
             if not gpt_messages or gpt_messages[-1].get("role") != "user" or gpt_messages[-1].get("content") != message:
                 gpt_messages.append({"role": "user", "content": message})
 
-
             ai_reply = await call_ai_service(gpt_messages)
             logger.debug(f"AI reply raw: {ai_reply!r}")
 
@@ -638,15 +675,10 @@ async def process_greenapi_webhook(request):
                 )
                 r.raise_for_status()
 
-                # 2) ярлык + закрытие
+                # 2) ярлык (мердж с текущими)
                 try:
                     wanted_label = ACTION_TO_LABEL.get(ctrl["type"])
-                    existing = await _cw_list_labels(client)
-                    label_to_use = _pick_label(existing, wanted_label)
-                    if label_to_use:
-                        await _cw_add_labels(client, conversation_id, [label_to_use])
-                    else:
-                        logger.warning(f"Ярлык '{wanted_label}' не найден среди категорий — пропускаю навешивание")
+                    await _cw_merge_and_add_label(client, conversation_id, wanted_label)
                 except Exception as lab_e:
                     logger.warning(f"Не удалось навесить ярлык/закрыть разговор: {lab_e}")
 
@@ -667,16 +699,12 @@ async def process_greenapi_webhook(request):
                 ai_msg_resp.raise_for_status()
                 logger.info("AI ответ отправлен в разговор %s", conversation_id)
 
-                # навешиваем ярлык в зависимости от текста
+                # навешиваем ярлык в зависимости от текста (мердж, без перезаписи)
                 try:
                     action = detect_action_from_ai_reply(ai_reply)
                     if action:
-                        existing = await _cw_list_labels(client)
-                        wanted_label = ACTION_TO_LABEL.get(action)
-                        label_to_use = _pick_label(existing, wanted_label)
-                        if label_to_use:
-                            await _cw_add_labels(client, conversation_id, [label_to_use])
-                            logger.info(f"Навешен ярлык '{label_to_use}' для action '{action}'")
+                        await _cw_merge_and_add_label(client, conversation_id, ACTION_TO_LABEL.get(action))
+                        logger.info(f"Навешен ярлык для action '{action}' (мердж с существующими)")
                 except Exception as lab_e:
                     logger.warning(f"Не удалось навесить ярлык по тексту: {lab_e}")
 

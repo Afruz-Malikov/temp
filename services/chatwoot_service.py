@@ -8,34 +8,44 @@ load_dotenv()
 logger = logging.getLogger("uvicorn.webhook")
 logging.basicConfig(level=logging.INFO)
 async def process_chatwoot_webhook(request):
-    processed_messages = set()
-    body = await request.json()
-    if body.get("event") != "message_created":
-        return {"status": "ignored"}
-    message = body.get("content")
-    sender = body.get("sender", {})
-    sender_type = sender.get("type")
-    inbox_id = str(body.get("conversation", {}).get("inbox_id"))
-    instance_info = instance_by_inbox_id.get(inbox_id) or {}
-    chat_id = body.get("conversation", {}).get("contact_inbox", {}).get("source_id")
-    message_id = body.get("id")
-    if not all([message, sender_type, chat_id, message_id]):
-        return {"status": "missing data"}
+    try:
+        processed_messages = set()
+        body = await request.json()
+        if body.get("event") != "message_created":
+            return {"status": "ignored"}
+        message = body.get("content")
+        sender = body.get("sender", {})
+        sender_type = sender.get("type")
+        inbox_id = str(body.get("conversation", {}).get("inbox_id"))
+        instance_info = instance_by_inbox_id.get(inbox_id) or {}
+        chat_id = body.get("conversation", {}).get("contact_inbox", {}).get("source_id")
+        message_id = body.get("id")
+        if not all([message, sender_type, chat_id, message_id]):
+            return {"status": "missing data"}
 
-    if sender_type.lower() != "user":
-        return {"status": "ignored"}
+        if sender_type.lower() != "user":
+            return {"status": "ignored"}
 
-    if message_id in processed_messages:
-        return {"status": "duplicate"}
-    processed_messages.add(message_id)
+        if message_id in processed_messages:
+            return {"status": "duplicate"}
+        processed_messages.add(message_id)
 
-    greenapi_url = f"https://api.green-api.com/waInstance{instance_info.get('id')}/SendMessage/{instance_info.get('token')}"
-    payload = {
-        "chatId": chat_id,
-        "message": message,
-        "linkPreview": False
-    }
-    async with httpx.AsyncClient() as client:
-       resp =  await client.post(greenapi_url, json=payload)    
-       logger.info(f"Sent to GreenAPI: {resp.status_code}, {resp.text} {resp}")
-    return {"status": "sent"} 
+        greenapi_url = f"https://api.green-api.com/waInstance{instance_info.get('id')}/SendMessage/{instance_info.get('token')}"
+        payload = {
+            "chatId": chat_id,
+            "message": message,
+            "linkPreview": False
+        }
+        async with httpx.AsyncClient() as client:
+            resp =  await client.post(greenapi_url, json=payload)    
+            logger.info(f"Sent to GreenAPI: {resp.status_code}, {resp.text} {resp}")
+        return {"status": "sent"}
+    except Exception as e:
+        logger.error(f"Ошибка в process_chatwoot_webhook: {e}")
+        try:
+            import asyncio
+            from utils.send_message_to_tg_bot import send_message_to_tg_bot
+            asyncio.run(send_message_to_tg_bot(f"Ошибка в process_chatwoot_webhook: {e}"))
+        except Exception:
+            pass
+        return {"status": "error", "detail": str(e)}
