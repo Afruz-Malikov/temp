@@ -542,30 +542,30 @@ def process_items_cron():
             if not cid:
                 continue
             try:
-                # today_str = now.strftime('%Y-%m-%d')
-                # app_resp = httpx.get(
-                #     f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
-                #     timeout=60,
-                #     headers=auth_header
-                # )
-                # upd_resp = httpx.get(
-                #     f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
-                #     timeout=60,
-                #     headers=auth_header
-                # )
-                # app_resp.raise_for_status()
-                # upd_resp.raise_for_status()
-                # created = app_resp.json().get("result", [])
-                # updated = upd_resp.json().get("result", [])
-                # updated_ids = {appt['id'] for appt in updated}
-                # merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
-                # all_appointments.extend(updated + merged_appointments)
+                today_str = now.strftime('%Y-%m-%d')
                 app_resp = httpx.get(
-                    f"https://7c2dfab3652d.ngrok-free.app/appointments",
+                    f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
                     timeout=60,
-                    headers={"ngrok-skip-browser-warning": "true"}
+                    headers=auth_header
                 )
-                all_appointments.extend(app_resp.json().get("result", []))
+                upd_resp = httpx.get(
+                    f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&updated_from={today_str}&updated_to={today_str}",
+                    timeout=60,
+                    headers=auth_header
+                )
+                app_resp.raise_for_status()
+                upd_resp.raise_for_status()
+                created = app_resp.json().get("result", [])
+                updated = upd_resp.json().get("result", [])
+                updated_ids = {appt['id'] for appt in updated}
+                merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
+                all_appointments.extend(updated + merged_appointments)
+                # app_resp = httpx.get(
+                #     f"https://7c2dfab3652d.ngrok-free.app/appointments",
+                #     timeout=60,
+                #     headers={"ngrok-skip-browser-warning": "true"}
+                # )
+                # all_appointments.extend(app_resp.json().get("result", []))
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
                 
