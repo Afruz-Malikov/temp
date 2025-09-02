@@ -29,7 +29,6 @@ async def process_chatwoot_webhook(request):
         if message_id in processed_messages:
             return {"status": "duplicate"}
         processed_messages.add(message_id)
-
         greenapi_url = f"https://api.green-api.com/waInstance{instance_info.get('id')}/SendMessage/{instance_info.get('token')}"
         payload = {
             "chatId": chat_id,
@@ -39,6 +38,7 @@ async def process_chatwoot_webhook(request):
         async with httpx.AsyncClient() as client:
             resp =  await client.post(greenapi_url, json=payload)    
             logger.info(f"Sent to GreenAPI: {resp.status_code}, {resp.text} {resp}")
+            await send_message_to_tg_bot(f"Sent to GreenAPI: {resp.status_code}, {resp.text} {resp}")
         return {"status": "sent"}
     except Exception as e:
         logger.error(f"Ошибка в process_chatwoot_webhook: {e}")
