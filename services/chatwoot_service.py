@@ -4,6 +4,7 @@ import os
 import re
 from dotenv import load_dotenv
 from constant.matchers import instance_by_inbox_id
+from utils.send_message_to_tg_bot import send_message_to_tg_bot
 load_dotenv()
 logger = logging.getLogger("uvicorn.webhook")
 logging.basicConfig(level=logging.INFO)
@@ -43,7 +44,6 @@ async def process_chatwoot_webhook(request):
     except Exception as e:
         logger.error(f"Ошибка в process_chatwoot_webhook: {e}")
         try:
-            from utils.send_message_to_tg_bot import send_message_to_tg_bot
             await send_message_to_tg_bot(f"Ошибка в process_chatwoot_webhook: {e}")
         except Exception:
             pass
