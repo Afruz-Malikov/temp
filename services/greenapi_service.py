@@ -519,7 +519,10 @@ async def process_greenapi_webhook(request):
         message = msg_data.get("extendedTextMessageData", {}).get("text", "")
     elif msg_type == "quotedMessage":
         message = msg_data.get("extendedTextMessageData", {}).get("text", "")
-
+        
+    if "{{SWE003}}" in (message or ""):
+        logger.info("Игнорируем сообщение с {{SWE003}}")
+        return {"status": "ignored"}
     sender_chat_id = body.get("senderData", {}).get("chatId", "")
     sender_name = body.get("senderData", {}).get("senderName", "")
     instance_id = str(body.get("instanceData", {}).get("idInstance"))
