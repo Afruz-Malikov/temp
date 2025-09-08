@@ -13,6 +13,7 @@ from google.oauth2 import service_account
 from datetime import datetime ,timezone, timedelta
 from googleapiclient.discovery import build
 import json
+from utils.send_message_to_tg_bot import send_message_to_tg_bot
 from dateutil import parser
 from constant.matchers import inbox_by_id_instance_match
 load_dotenv()
@@ -402,13 +403,6 @@ async def process_greenapi_webhook(request):
     # ===== Новые утилиты для поиска контакта и нормализации номера =====
     def _digits(s: str) -> str:
         return re.sub(r"\D+", "", s or "")
-
-    def _e164_from_chatid(chat_id: str) -> str:
-        # "998901234567@c.us" -> "+998901234567"
-        n = (chat_id or "").replace("@c.us", "")
-        n = _digits(n)
-        return f"+{n}" if n and not n.startswith("+") else n
-
     async def _cw_search_contact_by_phone(client, phone_e164: str):
         """
         Поиск контакта через обычный GET /contacts/search?p={phone}
@@ -518,11 +512,10 @@ async def process_greenapi_webhook(request):
     elif msg_type == "extendedTextMessage":
         message = msg_data.get("extendedTextMessageData", {}).get("text", "")
     elif msg_type == "quotedMessage":
-        message = msg_data.get("extendedTextMessageData", {}).get("text", "")
-        
+        message = msg_data.get("extendedTextMessageData", {}).get("text", "")  
     if "{{SWE003}}" in (message or ""):
-        logger.info("Игнорируем сообщение с {{SWE003}}")
-        return {"status": "ignored"}
+        message = "1"
+        await send_message_to_tg_bot(f"Replaced SWE003 in message: {message}")
     sender_chat_id = body.get("senderData", {}).get("chatId", "")
     sender_name = body.get("senderData", {}).get("senderName", "")
     instance_id = str(body.get("instanceData", {}).get("idInstance"))
