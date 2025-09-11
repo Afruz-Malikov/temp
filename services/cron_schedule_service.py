@@ -532,6 +532,25 @@ def process_items_cron():
             "longitude": "0",
             "latitude": "0"
         },
+           {
+            "id": "c389c091-be9c-11e5-9fce-a45d36c3a76c",
+            "name": "Мытищи МРТ-Эксперт",
+            "region": "Московская обл",
+            "region_code": 50,
+            "city_id": "5f290be7-14ff-4ccd-8bc8-2871a9ca9d5f",
+            "address": "141002, Московская обл, г Мытищи, ул Колпакова, д. 2А, помещ. 54",
+            "work_time": {
+                "mo": "12:00-23:45",
+                "tu": "12:00-23:45",
+                "we": "12:00-23:45",
+                "th": "12:00-23:45",
+                "fr": "12:00-23:45",
+                "sa": "12:00-23:45",
+                "su": "12:00-23:45"
+            },
+            "longitude": "0",
+            "latitude": "0"
+        },
         ]
 
         clinic_map = {c['id']: c for c in clinics}
@@ -539,9 +558,12 @@ def process_items_cron():
 
         for clinic in clinics:
             cid = clinic.get('id', '')
+            if cid == "c389c091-be9c-11e5-9fce-a45d36c3a76c":
+                continue
             if not cid:
                 continue
             try:
+                
                 today_str = now.strftime('%Y-%m-%d')
                 app_resp = httpx.get(
                     f"https://api.mrtexpert.ru/api/v3/appointments?clinic_id={cid}&created_from={today_str}&created_to={today_str}",
@@ -568,7 +590,26 @@ def process_items_cron():
                 # all_appointments.extend(app_resp.json().get("result", []))
             except Exception as e:
                 logger.error(f"Ошибка при получении заявок клиники {cid}: {e}")
-                
+        try:
+            app_resp_test = httpx.get(
+                f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id=c389c091-be9c-11e5-9fce-a45d36c3a76c&created_from={today_str}&created_to={today_str}",
+                timeout=60,
+                headers={"Authorization": f"Bearer CNvy6w6CRR1QLY2V6eq6gDQT"}
+            )
+            upd_resp_test = httpx.get(
+                f"https://apitest.mrtexpert.ru/api/v3/appointments?clinic_id=c389c091-be9c-11e5-9fce-a45d36c3a76c&updated_from={today_str}&updated_to={today_str}",
+                timeout=60,
+                headers={"Authorization": f"Bearer CNvy6w6CRR1QLY2V6eq6gDQT"}
+            )
+            app_resp_test.raise_for_status()
+            upd_resp_test.raise_for_status()
+            created_test = app_resp_test.json().get("result", [])
+            updated_test = upd_resp_test.json().get("result", [])
+            updated_ids_test = {appt['id'] for appt in updated_test}
+            merged_appointments_test = [appt for appt in created_test if appt["id"] not in updated_ids_test]
+            all_appointments.extend(updated_test + merged_appointments_test)
+        except Exception as e: 
+            send_message_to_tg_bot(f"Ошибка при получении заявок тестовой клиники c389c091-be9c-11e5-9fce-a45d36c3a76c: {e}")
         grouped = defaultdict(lambda: defaultdict(list))
         grouped_full = defaultdict(lambda: defaultdict(list))
         for appt in all_appointments:

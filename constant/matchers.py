@@ -14,7 +14,6 @@ inbox_by_id_instance_match = {
   "1103308629": {"inbox_id": "7", "green_token": GREENAPI_TOKEN_2, "green_id": GREENAPI_ID_2 },
   "1103277144": {"inbox_id": "4", "green_token": GREENAPI_TOKEN_3, "green_id": GREENAPI_ID_3 },
 }
-
 instance_by_inbox_id = {
    "6": {"token": GREENAPI_TOKEN, "id": GREENAPI_ID},
    "7": {"token": GREENAPI_TOKEN_2, "id": GREENAPI_ID_2},
@@ -24,4 +23,5 @@ inbox_id_by_clinic_id = {
   "19901c01-523d-11e5-bd0c-c8600054f881": "6",  # Липецк1
   "ade465cc-944f-11e6-b645-c8600054f881": "7",  # Липецк2
   "224b1764-6a1d-11eb-b818-005056b3ebff": "7",  # Липецк4
+  "c389c091-be9c-11e5-9fce-a45d36c3a76c": "4",  # Липецк4
 }
