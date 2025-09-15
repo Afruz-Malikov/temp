@@ -644,9 +644,6 @@ def process_items_cron():
                 logger.info("⛔ Пропуск: пустой номер телефона")
                 continue
             for date_str, items in dates.items():
-                if phone in notified_phones:
-                    logger.info(f"⛔ Пропуск: номер уже получил сообщение: {phone}")
-                    continue
                 if not items:
                     logger.info(f"⛔ Пропуск: нет записей у {phone} на {date_str}")
                     continue
@@ -738,17 +735,6 @@ def process_items_cron():
                         db.commit()
                         logger.info(f"🗑 Удалено pending сообщение для {item_id} (статус: {item_status})")
                     continue
-                # if appointment_in_db and appointment_in_db.scheduled_at != earliest_time:
-                #     appointment_in_db.scheduled_at = earliest_time
-                #     outdated_reminders = db.query(SendedMessage).filter(
-                #         SendedMessage.appointment_id == item_id,
-                #         SendedMessage.type.in_(['new_remind', 'day_remind', 'hour_remind', 'pending'])
-                #     ).all()
-                #     for reminder in outdated_reminders:
-                #         db.delete(reminder)
-                #     db.commit()
-                #     logger.info(f"✏️ Обновлено pending сообщение для {item_id}: новое время {earliest_time.isoformat()}")
-                
                 delta = earliest_time - now
                 dt_str = earliest_time.strftime('%d.%m.%Y %H:%M')
                 full_clinic = clinic_map.get(clinic.get("id"), clinic)
