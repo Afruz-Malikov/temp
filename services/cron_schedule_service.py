@@ -532,7 +532,7 @@ def process_items_cron():
             "longitude": "0",
             "latitude": "0"
         },
-           {
+        {
             "id": "c389c091-be9c-11e5-9fce-a45d36c3a76c",
             "name": "Мытищи МРТ-Эксперт",
             "region": "Московская обл",
@@ -583,7 +583,7 @@ def process_items_cron():
                 merged_appointments = [appt for appt in created if appt["id"] not in updated_ids]
                 all_appointments.extend(updated + merged_appointments)
                 # app_resp = httpx.get(
-                #     f"https://b5307e347eb9.ngrok-free.app/appointments",
+                #     f"https://2f60b39255d2.ngrok-free.app/appointments",
                 #     timeout=60,
                 #     headers={"ngrok-skip-browser-warning": "true"}
                 # )
@@ -608,6 +608,7 @@ def process_items_cron():
             updated_ids_test = {appt['id'] for appt in updated_test}
             merged_appointments_test = [appt for appt in created_test if appt["id"] not in updated_ids_test]
             all_appointments.extend(updated_test + merged_appointments_test)
+            
         except Exception as e: 
             send_message_to_tg_bot(f"Ошибка при получении заявок тестовой клиники c389c091-be9c-11e5-9fce-a45d36c3a76c: {e}")
         grouped = defaultdict(lambda: defaultdict(list))
@@ -690,44 +691,51 @@ def process_items_cron():
                 item_status = item.get("status")
                 clinic = earliest_item_obj.get("clinic", {})
                 patient = earliest_item_obj.get("patient", {})
-                appointment_id = earliest_item_obj.get("appointment_id")  # верхний id заказа
-                current_item_ids = {i.get("id") for i in appt.get("items", [])}
-
+                current_item_ids = {appt["item"].get("id") for appt in items if appt.get("item")}
                 appointment_in_db = db.query(SendedMessage).filter(
-                    SendedMessage.appointment_id == appointment_id,
+                    SendedMessage.appointment_id == item_id,
                     SendedMessage.type.in_(['pending'])
                 ).first()
-
                 if appointment_in_db:
                     # достаем сохранённые items
                     stored_item_ids = set()
                     try:
                         stored_item_ids = {
-                            i.get("id") for i in appointment_in_db.appointment_json[0].get("items", [])
+                        it.get("id")
+                        for appt_json in appointment_in_db.appointment_json or []
+                        for it in appt_json.get("items", [])
+                        if it.get("id")
                         }
                     except Exception:
-                        logger.warning(f"⚠️ Ошибка чтения items из appointment_json (appt_id={appointment_id})")
-                        send_message_to_tg_bot(f"⚠️ Ошибка чтения items из appointment_json (appt_id={appointment_id})")
-
+                        logger.warning(f"⚠️ Ошибка чтения items из appointment_json (appt_id={item_id})")
+                        send_message_to_tg_bot(f"⚠️ Ошибка чтения items из appointment_json (appt_id={item_id})")
                     # проверка изменений
                     time_changed = appointment_in_db.scheduled_at != earliest_time
                     items_changed = stored_item_ids != current_item_ids
-
-                    if time_changed or items_changed:
-                        # удаляем старые уведомления
+                    if time_changed:
+                        # меняем время → пересоздаём напоминания
                         outdated_reminders = db.query(SendedMessage).filter(
-                            SendedMessage.appointment_id == appointment_id,
+                            SendedMessage.appointment_id == item_id,
                             SendedMessage.type.in_(['new_remind', 'day_remind', 'hour_remind', 'pending'])
                         ).all()
                         for reminder in outdated_reminders:
                             db.delete(reminder)
                         db.commit()
                         logger.info(
-                            f"✏️ Обновлено pending сообщение для {appointment_id}: "
+                            f"✏️ Обновлено pending сообщение для {item_id}: "
                             f"новое время {earliest_time.isoformat()}, "
                             f"items {stored_item_ids} → {current_item_ids}"
                         )
 
+                    elif items_changed:
+                            
+                        appointment_in_db.appointment_json = list_of_apt_in_one_day
+                        db.add(appointment_in_db)
+                        db.commit()
+                        logger.info(
+                            f"♻️ Обновлён список услуг для {item_id}, время не трогаем: "
+                            f"items {stored_item_ids} → {current_item_ids}"
+                        )
                 if item_status in skip_statuses:
                     logger.info(f"⛔ Пропуск: статус {item_status} из списка исключений")
                     if appointment_in_db:
